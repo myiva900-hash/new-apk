@@ -149,7 +149,8 @@ export const backendApi = {
   async adminGenerateCode(
     token: string,
     hours: number,
-    assignedTo: string
+    assignedTo: string,
+    count = 1
   ): Promise<{
     ok: boolean;
     code: string;
@@ -157,11 +158,18 @@ export const backendApi = {
     hours: number;
     assignedTo: string;
     createdAt: string;
+    codes?: Array<{
+      code: string;
+      codeHint: string;
+      hours: number;
+      assignedTo: string;
+      createdAt: string;
+    }>;
   }> {
     return apiFetch('/api/admin/codes/generate', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ hours, assignedTo }),
+      body: JSON.stringify({ hours, assignedTo, count }),
     });
   },
 
@@ -192,6 +200,32 @@ export const backendApi = {
     return apiFetch(`/api/admin/servers/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
+    });
+  },
+
+  async askAssistant(params: {
+    message: string;
+    history?: Array<{ role: 'user' | 'model'; text: string }>;
+    clientState?: {
+      isNativeAndroid: boolean;
+      status: string;
+      connectionMode: string;
+      simCarrier: string;
+      hasEndpoint: boolean;
+      hasKeys: boolean;
+    };
+  }): Promise<{
+    ok: boolean;
+    reply: string;
+    vipActive: boolean;
+    remainingSeconds: number;
+  }> {
+    return apiFetch('/api/assistant/chat', {
+      method: 'POST',
+      body: JSON.stringify({
+        deviceId: getOrCreateDeviceId(),
+        ...params,
+      }),
     });
   },
 };

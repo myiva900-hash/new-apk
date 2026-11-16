@@ -205,6 +205,12 @@ class SoundService {
     }
   }
 
+  speakText(text: string) {
+    const clean = text.replace(/[*_`#>-]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!clean) return;
+    this.speakPhraseOfflineSafe(clean, { rate: 0.96, pitch: 0.9 });
+  }
+
   stopVoiceGuide() {
     this.isGuideCancelled = true;
     this.clearStepTimer();

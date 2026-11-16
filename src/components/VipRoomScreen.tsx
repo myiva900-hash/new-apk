@@ -33,6 +33,7 @@ interface VipRoomScreenProps {
   onOpenVipPayment: () => void;
   onSwitchToHome: () => void;
   onRefreshBackend: () => Promise<void>;
+  onOpenCodeGenerator?: () => void;
 }
 
 export const VipRoomScreen: React.FC<VipRoomScreenProps> = ({
@@ -43,6 +44,7 @@ export const VipRoomScreen: React.FC<VipRoomScreenProps> = ({
   onOpenVipPayment,
   onSwitchToHome,
   onRefreshBackend,
+  onOpenCodeGenerator,
 }) => {
   const [redeemInput, setRedeemInput] = useState('');
   const [redeemLoading, setRedeemLoading] = useState(false);
@@ -260,6 +262,23 @@ export const VipRoomScreen: React.FC<VipRoomScreenProps> = ({
             </div>
           </div>
         </div>
+
+        {onOpenCodeGenerator && (
+          <button
+            type="button"
+            onClick={onOpenCodeGenerator}
+            className="mt-3 w-full py-2.5 px-3 rounded-xl bg-gradient-to-r from-[#F59E0B] via-[#FBBF24] to-amber-500 hover:from-amber-400 hover:to-yellow-300 text-slate-950 font-black text-xs flex items-center justify-between shadow-md cursor-pointer transition-all active:scale-99"
+          >
+            <span className="flex items-center gap-2">
+              <KeyRound className="w-4 h-4" />
+              <span>Fungura Icyumba cya Redeem Generator</span>
+            </span>
+            <span className="text-[10px] font-black uppercase tracking-wider flex items-center gap-1">
+              <Lock className="w-3 h-3" />
+              Password
+            </span>
+          </button>
+        )}
       </div>
 
       {/* BACKEND SINGLE-USE REDEEM CODE INPUT */}

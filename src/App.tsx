@@ -38,7 +38,9 @@ import { ApkDownloadModal } from './components/ApkDownloadModal';
 import { OnlineUpdateModal } from './components/OnlineUpdateModal';
 import { VipPaymentModal } from './components/VipPaymentModal';
 import { AddServerDrawer } from './components/AddServerDrawer';
-import { Server } from 'lucide-react';
+import { AiAssistantModal } from './components/AiAssistantModal';
+import { CodeGeneratorRoomModal } from './components/CodeGeneratorRoomModal';
+import { Server, Bot } from 'lucide-react';
 
 const WG_PROFILE_STORAGE_KEY = 'myv_wg_profile_v6';
 const LOCAL_SERVERS_STORAGE_KEY = 'myv_local_servers_v6';
@@ -166,6 +168,8 @@ export default function App() {
   const [onlineUpdateOpen, setOnlineUpdateOpen] = useState(false);
   const [vipPaymentOpen, setVipPaymentOpen] = useState(false);
   const [addServerOpen, setAddServerOpen] = useState(false);
+  const [aiAssistantOpen, setAiAssistantOpen] = useState(false);
+  const [codeGeneratorOpen, setCodeGeneratorOpen] = useState(false);
 
   // Sync theme
   useEffect(() => {
@@ -420,6 +424,8 @@ export default function App() {
       | 'vip_payment'
       | 'vip_room'
       | 'add_server'
+      | 'ai_assistant'
+      | 'code_generator'
   ) => {
     switch (option) {
       case 'payload_gen':
@@ -457,6 +463,12 @@ export default function App() {
         break;
       case 'add_server':
         setAddServerOpen(true);
+        break;
+      case 'ai_assistant':
+        setAiAssistantOpen(true);
+        break;
+      case 'code_generator':
+        setCodeGeneratorOpen(true);
         break;
     }
   };
@@ -524,6 +536,8 @@ export default function App() {
               onOpenUpdate={() => setOnlineUpdateOpen(true)}
               onOpenVipPayment={handleOpenVipPayment}
               onOpenVipRoom={handleOpenVipRoom}
+              onOpenAiAssistant={() => setAiAssistantOpen(true)}
+              onOpenCodeGenerator={() => setCodeGeneratorOpen(true)}
               accentColor={settings.accentColor}
             />
 
@@ -580,6 +594,7 @@ export default function App() {
                   onOpenVipPayment={handleOpenVipPayment}
                   onSwitchToHome={() => setActiveTab('HOME')}
                   onRefreshBackend={refreshBackend}
+                  onOpenCodeGenerator={() => setCodeGeneratorOpen(true)}
                 />
               ) : (
                 <LogScreen logs={logs} onClearLogs={handleClearLogs} />
@@ -599,6 +614,20 @@ export default function App() {
           >
             <Server className="w-3.5 h-3.5" />
             <span className="[writing-mode:vertical-rl] rotate-180 uppercase">+ SERVER</span>
+          </button>
+        )}
+
+        {/* Floating AI Assistant Help Button */}
+        {currentView === 'main' && (
+          <button
+            type="button"
+            onClick={() => setAiAssistantOpen(true)}
+            className="fixed bottom-4 right-4 z-30 bg-gradient-to-r from-[#1D4ED8] to-[#06B6D4] hover:from-blue-600 hover:to-cyan-400 text-white border border-cyan-300/40 rounded-2xl px-3.5 py-2.5 shadow-xl shadow-blue-900/40 flex items-center gap-2 text-xs font-black tracking-wide cursor-pointer transition-transform active:scale-95"
+            title="AI Assistant: Kwishyura, Free Internet & VPN Help"
+            aria-label="AI Assistant"
+          >
+            <Bot className="w-4 h-4" />
+            <span>AI Help</span>
           </button>
         )}
       </div>
@@ -686,6 +715,35 @@ export default function App() {
         }}
         onDeleteLocalServer={handleDeleteLocalServer}
         onBackendServerAdded={refreshBackend}
+      />
+
+      <AiAssistantModal
+        isOpen={aiAssistantOpen}
+        onClose={() => setAiAssistantOpen(false)}
+        clientState={{
+          isNativeAndroid: stats.nativeAndroidActive,
+          status,
+          connectionMode,
+          simCarrier,
+          hasEndpoint: Boolean(
+            (connectionMode === 'wireguard_server' && selectedServer.endpointHost) ||
+              customSetup.wireguard.endpointHost
+          ),
+          hasKeys: Boolean(
+            customSetup.wireguard.privateKey &&
+              ((connectionMode === 'wireguard_server' && selectedServer.serverPublicKey) ||
+                customSetup.wireguard.peerPublicKey)
+          ),
+        }}
+        onOpenVipPayment={handleOpenVipPayment}
+        onOpenVipRoom={handleOpenVipRoom}
+        onOpenAddServer={() => setAddServerOpen(true)}
+        onOpenApkDownload={() => setApkDownloadOpen(true)}
+      />
+
+      <CodeGeneratorRoomModal
+        isOpen={codeGeneratorOpen}
+        onClose={() => setCodeGeneratorOpen(false)}
       />
     </div>
   );

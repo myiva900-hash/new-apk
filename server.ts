@@ -5,6 +5,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { GoogleGenAI } from '@google/genai';
 
 const PORT = Number(process.env.PORT) || 3000;
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -12,6 +13,28 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const db = new DatabaseSync(path.join(DATA_DIR, 'myv_vpn.db'));
 db.exec('PRAGMA journal_mode = WAL;');
+
+let cachedAiClient: { key: string; client: GoogleGenAI } | null = null;
+function getGeminiClient(): GoogleGenAI | null {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+    return null;
+  }
+  if (!cachedAiClient || cachedAiClient.key !== apiKey) {
+    cachedAiClient = {
+      key: apiKey,
+      client: new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          },
+        },
+      }),
+    };
+  }
+  return cachedAiClient.client;
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS app_meta (
@@ -101,7 +124,8 @@ function hashAdminSecret(secret: string, salt: string): string {
 }
 
 function isAdminConfigured(): boolean {
-  if (process.env.ADMIN_SECRET && process.env.ADMIN_SECRET.trim().length >= 4) {
+  const envSecret = process.env.ADMIN_SECRET?.trim();
+  if (envSecret && envSecret.length >= 4 && envSecret !== 'CHANGE_ME_STRONG_ADMIN_SECRET') {
     return true;
   }
   const row = db.prepare(`SELECT value FROM app_meta WHERE key = 'admin_secret_hash'`).get() as
@@ -110,11 +134,22 @@ function isAdminConfigured(): boolean {
   return Boolean(row?.value);
 }
 
+function ensureDefaultOwnerSecret(): void {
+  if (isAdminConfigured()) return;
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hashed = hashAdminSecret('20007', salt);
+  db.prepare(`INSERT OR IGNORE INTO app_meta (key, value) VALUES ('admin_secret_hash', ?)`).run(
+    `${salt}:${hashed}`
+  );
+}
+ensureDefaultOwnerSecret();
+
 function verifyAdminSecret(candidate: string): boolean {
   if (!candidate) return false;
-  if (process.env.ADMIN_SECRET && process.env.ADMIN_SECRET.trim().length >= 4) {
+  const envSecret = process.env.ADMIN_SECRET?.trim();
+  if (envSecret && envSecret.length >= 4 && envSecret !== 'CHANGE_ME_STRONG_ADMIN_SECRET') {
     const a = Buffer.from(candidate);
-    const b = Buffer.from(process.env.ADMIN_SECRET.trim());
+    const b = Buffer.from(envSecret);
     return a.length === b.length && crypto.timingSafeEqual(a, b);
   }
   const row = db.prepare(`SELECT value FROM app_meta WHERE key = 'admin_secret_hash'`).get() as
@@ -761,7 +796,8 @@ async function startServer() {
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
-    const hours = Math.min(8760, Math.max(1, Number(req.body?.hours) || 50));
+    const hours = Math.min(26280, Math.max(1, Number(req.body?.hours) || 50));
+    const count = Math.min(20, Math.max(1, Math.floor(Number(req.body?.count) || 1)));
     const assignedTo =
       typeof req.body?.assignedTo === 'string' && req.body.assignedTo.trim()
         ? req.body.assignedTo.trim().slice(0, 60)
@@ -771,23 +807,54 @@ async function startServer() {
     const randBlock = (len: number) =>
       Array.from(crypto.randomBytes(len), b => alphabet[b % alphabet.length]).join('');
 
-    const plaintextCode = `MYV-${hours}H-${randBlock(4)}-${randBlock(4)}`;
-    const codeHash = hashString(plaintextCode);
-    const codeHint = `MYV-${hours}H-****-${plaintextCode.slice(-4)}`;
     const createdAt = new Date().toISOString();
+    const generated: Array<{
+      code: string;
+      codeHint: string;
+      hours: number;
+      assignedTo: string;
+      createdAt: string;
+    }> = [];
 
-    db.prepare(`
+    const insertStmt = db.prepare(`
       INSERT INTO redeem_codes (code_hash, code_hint, hours, assigned_to, redeemed, created_at)
       VALUES (?, ?, ?, ?, 0, ?)
-    `).run(codeHash, codeHint, hours, assignedTo, createdAt);
+    `);
+
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (let i = 0; i < count; i++) {
+        const plaintextCode = `MYV-${hours}H-${randBlock(4)}-${randBlock(4)}`;
+        const codeHash = hashString(plaintextCode);
+        const codeHint = `MYV-${hours}H-****-${plaintextCode.slice(-4)}`;
+        insertStmt.run(codeHash, codeHint, hours, assignedTo, createdAt);
+        generated.push({
+          code: plaintextCode,
+          codeHint,
+          hours,
+          assignedTo,
+          createdAt,
+        });
+      }
+      db.exec('COMMIT');
+    } catch {
+      try {
+        db.exec('ROLLBACK');
+      } catch {
+        // Ignore
+      }
+      res.status(500).json({ error: 'Failed to generate redeem code(s).' });
+      return;
+    }
 
     res.status(201).json({
       ok: true,
-      code: plaintextCode,
-      codeHint,
+      code: generated[0].code,
+      codeHint: generated[0].codeHint,
       hours,
       assignedTo,
       createdAt,
+      codes: generated,
     });
   });
 
@@ -874,6 +941,151 @@ async function startServer() {
     }
     db.prepare(`DELETE FROM wg_servers WHERE id = ?`).run(req.params.id);
     res.json({ ok: true });
+  });
+
+  // Server-side Gemini AI Assistant for Mutiganda Yvan VPN
+  app.post('/api/assistant/chat', async (req, res) => {
+    const ai = getGeminiClient();
+    if (!ai) {
+      res.status(503).json({
+        error:
+          'GEMINI_API_KEY ntabwo irashyirwa muri Settings > Secrets ya server. Ongeramo API key kugira ngo AI Assistant ikore.',
+      });
+      return;
+    }
+
+    const rawMessage = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    if (!rawMessage || rawMessage.length > 2000) {
+      res.status(400).json({ error: 'Andika ikibazo cyiza (hagati y’inyuguti 1 na 2000).' });
+      return;
+    }
+
+    const deviceId = validateDeviceId(req.header('x-device-id') || req.body?.deviceId);
+    const vipInfo = deviceId ? getDeviceVipStatus(deviceId) : null;
+    const serverCountRow = db.prepare(`SELECT COUNT(*) AS cnt FROM wg_servers`).get() as
+      | { cnt: number }
+      | undefined;
+    const registeredServerCount = serverCountRow?.cnt ?? 0;
+
+    const clientState =
+      req.body?.clientState && typeof req.body.clientState === 'object' ? req.body.clientState : {};
+
+    const rawHistory = Array.isArray(req.body?.history) ? req.body.history : [];
+    const safeHistory: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+    for (const item of rawHistory.slice(-12)) {
+      if (
+        item &&
+        (item.role === 'user' || item.role === 'model') &&
+        typeof item.text === 'string' &&
+        item.text.trim()
+      ) {
+        safeHistory.push({
+          role: item.role,
+          parts: [{ text: item.text.trim().slice(0, 2000) }],
+        });
+      }
+    }
+
+    const remainingHours = vipInfo
+      ? Math.floor(vipInfo.remainingSeconds / 3600)
+      : 0;
+
+    const systemInstruction = `Uri AI Assistant w'ikaze wa "Mutiganda Yvan VPN v6" (Founder: Mutiganda Yvan, Rwanda).
+Inshingano yawe ni ugufasha abakoresha mu Kinyarwanda (cyangwa Icyongereza/Igifaransa iyo babajije muri izo ndimi) kandi utanga amakuru y'ukuri, asobanutse, kandi yihuse ku bintu bikurikira:
+
+1. UKO BAKWISHYURA VIP (MTN Mobile Money Rwanda):
+- MTN MoMo Number: 0780949484
+- MoMo Pay Code: 2238763
+- Amazina yanditseho: Yvan Mutiganda
+- USSD Code zo gukanda ako kanya:
+  * *182*8*1*2238763# (Kwishyura na MoMo Pay Code)
+  * *182*1*1*0780949484# (Kohereza kuri nimero ya MTN)
+- Ibiciro bya VIP (Unlimited Internet · All Country · All SIM Card):
+  * 1 Week VIP: 2,000 FRW (amasaha 168)
+  * 2 Months VIP: 12,000 FRW (amasaha 1,440)
+  * 3 Years Ultra VIP: 35,000 FRW (amasaha 26,280)
+- Nyuma yo kwishyura:
+  1) Injira muri "KWISHYURA VIP" (buto y'izahabu hejuru cyangwa kuri Home), winjize nimero yawe wishyuyeho na Transaction ID ya MoMo, ubwo ubusabe bujya muri Backend.
+  2) Cyangwa ohereza screenshot kuri WhatsApp ya Mutiganda Yvan: 0787699523 (https://wa.me/250787699523) kugira ngo bikwemezwe cyangwa uhabwe Redeem Code.
+
+2. UKO BAKORESHA FREE INTERNET & WIREGUARD VPN TUNNEL:
+- App ikorana n'imiyoboro yose ya SIM Card (MTN Rwanda, Airtel Rwanda, All Countries / All SIM Cards) ikoresheje ikoranabuhanga nyaryo rya WireGuard (GoBackend + Android VpnService kuri tun0).
+- Intambwe zo gutangira gukoresha VPN:
+  1) Koresha Android APK ("Kuramo APK ya Phone" muri menu) kugira ngo tunnel nyayo ya tun0 ikore kuri telefoni. (Browser yo ikoreshwa mu kugenzura server, kwishyura, no gutegura config).
+  2) Hitamo cyangwa ongeramo WireGuard Server:
+     - Kanda "+ SERVER" ku ruhande rw'iburyo cyangwa "+ Server" kuri Home kugira ngo wandike endpoint ya VPS/WireGuard yawe cyangwa ukore paste ya dosiye .conf.
+     - Cyangwa ukande utudomo 3 hejuru -> "Import Config (.myv)" / ".conf".
+  3) Tegura Keys muri "WG KEYS":
+     - Kanda "Generate KeyPair" kugira ngo app ikore PrivateKey na PublicKey yawe, wongeremo Endpoint (Host:Port) na Server PublicKey niba utarashyiramo server.
+  4) Hitamo SIM Card yawe (MTN, Airtel, cyangwa All SIM) niba ubishaka ushyiremo Custom DNS (1.1.1.1 / 8.8.8.8) cyangwa Payload reference mu buryo bwo hasi.
+  5) Kanda "CONNECT WIREGUARD" maze wemere uruhushya rwa Android VPN kugira ngo internet inyure muri tunnel yizewe, ushobore kureba umuvuduko (D3 Traffic Chart) na LOG.
+
+3. REDEEM CODE & VIP ROOM:
+- Redeem codes za single-use (urugero: MYV-50H-XXXX-XXXX) zigurishwa cyangwa zitangwa na Admin (zitanga nka +50 amasaha cyangwa igihe cya VIP) zigenzurwa kuri Backend SQLite buri gihe; ntizishobora gukoreshwa kabiri.
+- Koresha tab ya "VIP ROOM" kugira ngo winjize Redeem Code yawe, cyangwa niba uri Admin wemeze payments kandi ukore codes nshya.
+
+4. AMAKURU Y'AKA KANYA Y'UYU MUKORESHA (LIVE CONTEXT):
+- Device ID: ${deviceId || 'Unknown'}
+- VIP Active kuri Backend: ${vipInfo?.isVipActive ? `YEGO (hasigaye amasaha ~${remainingHours}h / ${vipInfo.remainingSeconds}s)` : 'OYA (Nta VIP ikora iriho ubu)'}
+- Umubare wa Verified Servers muri Backend DB: ${registeredServerCount}
+- Muri Android APK cyangwa Browser: ${clientState.isNativeAndroid ? 'Android APK Native Active' : 'Browser Preview Mode'}
+- WireGuard Endpoint yashyizwemo: ${clientState.hasEndpoint ? 'Yego' : 'Ntarashyirwamo'}
+- WireGuard Keys (Private & Peer PublicKey): ${clientState.hasKeys ? 'Zirimo' : 'Hari key ibura'}
+- VPN Status ubu: ${String(clientState.status || 'disconnected')}
+
+AMATEGEKO Y'IGISUBIZO:
+- Subiza mu rurimi umukoresha yakubajijemo (Kinyarwanda iyo ari mu Kinyarwanda, English iyo ari mu Cyongereza).
+- Sobanura neza, mu ncamake zisobanutse (ukoreshe intambwe 1, 2, 3...), kandi uvugishe ukuri: ntiwizeze ibinyoma; sobanura ko WireGuard tunnel nyayo ikenera Android APK na WireGuard server/config ikora.
+- Iyo umukoresha abajije ibyo kwishyura, buri gihe muhe nimero 0780949484, MoMo Code 2238763 (Yvan Mutiganda), USSD *182*8*1*2238763#, n'ibiciro bya 2,000 / 12,000 / 35,000 FRW na WhatsApp 0787699523.
+- Isubize gusa mu magambo arambuye mu buryo bworoshye gusoma (nko hagati y'imirongo 4 na 14 bitewe n'ikibazo).`;
+
+    try {
+      const chat = ai.chats.create({
+        model: 'gemini-4-hydrogen',
+        history: safeHistory,
+        config: {
+          systemInstruction,
+        },
+      });
+
+      const response = await chat.sendMessage({
+        message: rawMessage,
+      });
+
+      const replyText = response.text?.trim();
+      if (!replyText) {
+        res.status(502).json({
+          error: 'AI ntiyashoboye gutanga igisubizo aka kanya. Ongera ugerageze.',
+        });
+        return;
+      }
+
+      res.json({
+        ok: true,
+        reply: replyText,
+        vipActive: Boolean(vipInfo?.isVipActive),
+        remainingSeconds: vipInfo?.remainingSeconds ?? 0,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('Gemini assistant error:', msg);
+
+      if (msg.includes('API_KEY_INVALID') || msg.includes('PERMISSION_DENIED') || msg.includes('403')) {
+        res.status(502).json({
+          error: 'GEMINI_API_KEY ntabwo yemewe cyangwa ifite ikibazo. Genzura muri Settings > Secrets.',
+        });
+        return;
+      }
+      if (msg.includes('RESOURCE_EXHAUSTED') || msg.includes('429')) {
+        res.status(429).json({
+          error: 'Umubare w’ibibazo kuri Gemini urenze urugero aka kanya. Tegereza akanya wongere ugerageze.',
+        });
+        return;
+      }
+      res.status(502).json({
+        error: `AI Assistant yahuye n'ikibazo cya network/API: ${msg}`,
+      });
+    }
   });
 
   if (process.env.NODE_ENV !== 'production') {

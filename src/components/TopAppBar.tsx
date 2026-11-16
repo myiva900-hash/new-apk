@@ -12,7 +12,9 @@ import {
   ArrowLeft,
   RefreshCw,
   Crown,
-  Gift
+  Gift,
+  Bot,
+  KeyRound
 } from 'lucide-react';
 import { MyvLogo } from './MyvLogo';
 
@@ -31,6 +33,8 @@ interface TopAppBarProps {
   onOpenUpdate?: () => void;
   onOpenVipPayment?: () => void;
   onOpenVipRoom?: () => void;
+  onOpenAiAssistant?: () => void;
+  onOpenCodeGenerator?: () => void;
   accentColor?: 'blue' | 'red' | 'green' | 'yellow' | 'black';
 }
 
@@ -49,6 +53,8 @@ export const TopAppBar: React.FC<TopAppBarProps> = ({
   onOpenUpdate,
   onOpenVipPayment,
   onOpenVipRoom,
+  onOpenAiAssistant,
+  onOpenCodeGenerator,
   accentColor = 'blue',
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -123,8 +129,20 @@ export const TopAppBar: React.FC<TopAppBarProps> = ({
           </div>
         </div>
 
-        {/* Right Actions: Gold VIP button, Settings, Overflow ⋮ */}
+        {/* Right Actions: AI Assistant, Gold VIP button, Settings, Overflow ⋮ */}
         <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+          {!showBack && onOpenAiAssistant && (
+            <button
+              onClick={onOpenAiAssistant}
+              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/35 border border-cyan-400/45 text-cyan-200 font-black text-[10px] sm:text-xs shadow-sm transition-all active:scale-95 cursor-pointer whitespace-nowrap"
+              aria-label="AI Assistant"
+              title="AI Assistant (Ubufasha)"
+            >
+              <Bot className="w-3.5 h-3.5" />
+              <span>AI</span>
+            </button>
+          )}
+
           {!showBack && onOpenVipPayment && (
             <button
               onClick={onOpenVipPayment}
@@ -208,6 +226,32 @@ export const TopAppBar: React.FC<TopAppBarProps> = ({
                   >
                     <Gift className="w-4 h-4 text-emerald-400" />
                     <span>VIP Room &amp; +50h Redeem</span>
+                  </button>
+                )}
+
+                {onOpenCodeGenerator && (
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onOpenCodeGenerator();
+                    }}
+                    className="w-full flex items-center gap-3 px-4 py-2 text-xs font-bold hover:bg-amber-50 dark:hover:bg-amber-950/30 text-amber-600 dark:text-amber-300 text-left transition-colors cursor-pointer"
+                  >
+                    <KeyRound className="w-4 h-4 text-amber-400" />
+                    <span>Icyumba cya Redeem Generator</span>
+                  </button>
+                )}
+
+                {onOpenAiAssistant && (
+                  <button
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onOpenAiAssistant();
+                    }}
+                    className="w-full flex items-center gap-3 px-4 py-2 text-xs font-bold hover:bg-cyan-50 dark:hover:bg-cyan-950/30 text-blue-700 dark:text-cyan-300 text-left transition-colors cursor-pointer"
+                  >
+                    <Bot className="w-4 h-4 text-cyan-400" />
+                    <span>AI Assistant (Ubufasha)</span>
                   </button>
                 )}
 

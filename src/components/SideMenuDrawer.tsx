@@ -12,7 +12,9 @@ import {
   RefreshCw,
   Crown,
   Gift,
-  Plus
+  Plus,
+  Bot,
+  KeyRound
 } from 'lucide-react';
 
 interface SideMenuDrawerProps {
@@ -32,6 +34,8 @@ interface SideMenuDrawerProps {
       | 'vip_payment'
       | 'vip_room'
       | 'add_server'
+      | 'ai_assistant'
+      | 'code_generator'
   ) => void;
 }
 
@@ -140,6 +144,34 @@ export const SideMenuDrawer: React.FC<SideMenuDrawerProps> = ({
                   <span>Ongeramo Server</span>
                 </div>
                 <span className="text-[10px] font-black">+WG</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  onClose();
+                  onSelectOption('ai_assistant');
+                }}
+                className="w-full flex items-center justify-between px-3.5 py-2 rounded-xl text-left text-xs sm:text-sm font-bold bg-indigo-50 dark:bg-blue-950/60 text-blue-700 dark:text-[#06B6D4] border border-blue-200 dark:border-cyan-500/45 hover:bg-indigo-100/60 transition-all cursor-pointer"
+              >
+                <div className="flex items-center gap-2">
+                  <Bot className="w-4 h-4" />
+                  <span>AI Assistant (Ubufasha)</span>
+                </div>
+                <span className="text-[10px] font-black">AI</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  onClose();
+                  onSelectOption('code_generator');
+                }}
+                className="w-full flex items-center justify-between px-3.5 py-2 rounded-xl text-left text-xs sm:text-sm font-bold bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-[#FBBF24] border border-amber-200 dark:border-amber-500/45 hover:bg-amber-100/60 transition-all cursor-pointer"
+              >
+                <div className="flex items-center gap-2">
+                  <KeyRound className="w-4 h-4" />
+                  <span>Icyumba cya Redeem Generator</span>
+                </div>
+                <span className="text-[10px] font-black">KEY</span>
               </button>
             </div>
 
