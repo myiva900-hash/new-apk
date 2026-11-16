@@ -34,6 +34,7 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        isCoreLibraryDesugaringEnabled = true
     }
     kotlinOptions {
         jvmTarget = "17"
@@ -53,4 +54,8 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     implementation(libs.kotlinx.coroutines.android)
+
+    // Official WireGuard Android tunnel (wireguard-go + Android VpnService GoBackend)
+    implementation("com.wireguard.android:tunnel:1.0.20230706")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.2")
 }

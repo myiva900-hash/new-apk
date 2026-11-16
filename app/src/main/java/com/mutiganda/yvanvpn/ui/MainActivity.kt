@@ -17,25 +17,39 @@ import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
-import com.mutiganda.yvanvpn.service.MyvVpnService
+import com.mutiganda.yvanvpn.service.WireGuardController
+import com.wireguard.android.backend.GoBackend
+import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var webView: WebView
-    private var pendingServerHost = "gisozi.kigali.myv-vpn.rw"
-    private var pendingServerPort = 80
+    private lateinit var wireGuardController: WireGuardController
+    private var pendingConfigIni: String = ""
+    private var pendingServerLabel: String = "WireGuard Tunnel"
 
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            launchVpnService()
+        if (result.resultCode == Activity.RESULT_OK && pendingConfigIni.isNotBlank()) {
+            wireGuardController.connect(pendingConfigIni, pendingServerLabel)
+        } else {
+            val err = JSONObject().apply {
+                put("level", "error")
+                put("message", "[Android VpnService] VPN permission was denied by user.")
+            }
+            dispatchToWeb("log", err)
+            dispatchToWeb("state", JSONObject().apply { put("status", "disconnected") })
         }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        wireGuardController = WireGuardController(this) { eventType, payload ->
+            dispatchToWeb(eventType, payload)
+        }
 
         webView = WebView(this).apply {
             layoutParams = ViewGroup.LayoutParams(
@@ -64,7 +78,12 @@ class MainActivity : ComponentActivity() {
                     request: WebResourceRequest?
                 ): Boolean {
                     val url = request?.url?.toString() ?: return false
-                    if (url.startsWith("https://wa.me/") || url.startsWith("whatsapp://") || url.startsWith("tel:") || url.startsWith("mailto:")) {
+                    if (
+                        url.startsWith("https://wa.me/") ||
+                        url.startsWith("whatsapp://") ||
+                        url.startsWith("tel:") ||
+                        url.startsWith("mailto:")
+                    ) {
                         try {
                             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
                             startActivity(intent)
@@ -82,14 +101,12 @@ class MainActivity : ComponentActivity() {
                     error: WebResourceError?
                 ) {
                     if (request?.isForMainFrame == true) {
-                        // Fallback to embedded bundled offline version if device is offline
                         view?.loadUrl("file:///android_asset/www/index.html")
                     }
                 }
             }
 
             addJavascriptInterface(VpnBridge(), "AndroidVpn")
-            // Loads the live cloud online version automatically so updates reflect instantly
             loadUrl("https://ais-pre-cmw46z3ccjwjrwsdznksfu-385114119254.us-east1.run.app")
         }
 
@@ -107,21 +124,48 @@ class MainActivity : ComponentActivity() {
         })
     }
 
+    private fun dispatchToWeb(eventType: String, payload: JSONObject) {
+        val escapedType = JSONObject.quote(eventType)
+        val jsonStr = payload.toString()
+        runOnUiThread {
+            if (::webView.isInitialized) {
+                webView.evaluateJavascript(
+                    "window.__MYV_NATIVE_BRIDGE__ && window.__MYV_NATIVE_BRIDGE__.onNativeEvent($escapedType, $jsonStr);",
+                    null
+                )
+            }
+        }
+    }
+
     inner class VpnBridge {
         @JavascriptInterface
-        fun startVpn(serverHost: String, serverPort: Int) {
-            pendingServerHost = serverHost
-            pendingServerPort = serverPort
+        fun isNativeAndroid(): Boolean = true
+
+        @JavascriptInterface
+        fun isWireGuardSupported(): Boolean = true
+
+        @JavascriptInterface
+        fun startWireGuard(configIni: String, serverLabel: String) {
+            pendingConfigIni = configIni
+            pendingServerLabel = serverLabel
             runOnUiThread {
-                prepareAndStartVpn()
+                prepareAndStartWireGuard()
             }
         }
 
         @JavascriptInterface
-        fun stopVpn() {
-            runOnUiThread {
-                stopVpnService()
-            }
+        fun stopWireGuard() {
+            wireGuardController.disconnect()
+        }
+
+        @JavascriptInterface
+        fun getStatusJson(): String {
+            return wireGuardController.getStatusJson()
+        }
+
+        @JavascriptInterface
+        fun generateWireGuardKeyPair(): String {
+            return wireGuardController.generateKeyPairJson()
         }
 
         @JavascriptInterface
@@ -137,32 +181,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun prepareAndStartVpn() {
-        val intent = VpnService.prepare(this)
+    private fun prepareAndStartWireGuard() {
+        val intent = GoBackend.VpnService.prepare(this) ?: VpnService.prepare(this)
         if (intent != null) {
             vpnPermissionLauncher.launch(intent)
         } else {
-            launchVpnService()
+            wireGuardController.connect(pendingConfigIni, pendingServerLabel)
         }
-    }
-
-    private fun launchVpnService() {
-        val intent = Intent(this, MyvVpnService::class.java).apply {
-            action = MyvVpnService.ACTION_START
-            putExtra(MyvVpnService.EXTRA_SERVER_HOST, pendingServerHost)
-            putExtra(MyvVpnService.EXTRA_SERVER_PORT, pendingServerPort)
-        }
-        startService(intent)
-    }
-
-    private fun stopVpnService() {
-        val intent = Intent(this, MyvVpnService::class.java).apply {
-            action = MyvVpnService.ACTION_STOP
-        }
-        startService(intent)
     }
 
     override fun onDestroy() {
+        wireGuardController.destroy()
         webView.destroy()
         super.onDestroy()
     }

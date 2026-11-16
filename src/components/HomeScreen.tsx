@@ -3,14 +3,13 @@ import {
   ChevronDown,
   ArrowUpCircle,
   ArrowDownCircle,
-  Rocket,
+  Shield,
   Sliders,
   Check,
   Play,
   Square,
   Activity,
   ShieldCheck,
-  Sparkles,
   Lock,
   MessageCircle,
   Crown,
@@ -20,22 +19,28 @@ import {
   MoreVertical,
   Download,
   Upload,
-  RefreshCw
+  RefreshCw,
+  KeyRound,
+  AlertTriangle
 } from 'lucide-react';
 import {
   ConnectionMode,
   ConnectionStatus,
   CustomSetupConfig,
   SimCarrierMode,
-  VpnServer
+  VipAccountStatus,
+  VpnServer,
+  WireGuardProfile
 } from '../types/vpn';
-import { VpnStats, vpnSimulator } from '../services/vpnSimulator';
-import { SERVERS, AVAILABLE_PORTS, SIM_CARRIERS } from '../data/servers';
+import { LiveTunnelStats, vpnBridge, isValidWireGuardKey } from '../services/vpnBridge';
+import { WIREGUARD_PORTS, SIM_CARRIERS } from '../data/servers';
 import { MyvLogo } from './MyvLogo';
 
 interface HomeScreenProps {
   status: ConnectionStatus;
-  stats: VpnStats;
+  stats: LiveTunnelStats;
+  vipStatus: VipAccountStatus | null;
+  servers: VpnServer[];
   selectedServer: VpnServer;
   onSelectServer: (server: VpnServer) => void;
   selectedPort: number;
@@ -47,18 +52,18 @@ interface HomeScreenProps {
   customSetupEnabled: boolean;
   onToggleCustomSetup: (enabled: boolean) => void;
   customSetup: CustomSetupConfig;
-  onUpdateCustomSetup: (updates: Partial<CustomSetupConfig>) => void;
+  onUpdateWireGuard: (updates: Partial<WireGuardProfile>) => void;
+  onGenerateKeyPair: () => void;
   onStartVpn: () => void;
   onStopVpn: () => void;
-  onOpenPayloadGen: () => void;
   onOpenImportConfig: () => void;
   onOpenExportConfig: () => void;
   onOpenServerApps: () => void;
   onOpenUpdate?: () => void;
   onOpenVipPayment?: () => void;
   onOpenVipRoom?: () => void;
+  onRefreshBackend?: () => void;
   accentColor?: 'blue' | 'red' | 'green' | 'yellow' | 'black';
-  onSelectAccentColor?: (color: 'blue' | 'red' | 'green' | 'yellow' | 'black') => void;
 }
 
 const CONNECTION_MODES: {
@@ -66,17 +71,16 @@ const CONNECTION_MODES: {
   title: string;
   subtitle: string;
 }[] = [
-  { id: 'direct', title: 'Direct Connection', subtitle: 'Rwanda & Global Internet · No VPS Needed' },
-  { id: 'custom_payload', title: 'Custom Payload', subtitle: 'TCP Injection Mode' },
-  { id: 'custom_host', title: 'Custom Host Header', subtitle: 'HTTP Header Mode' },
-  { id: 'custom_sni', title: 'Custom SNI', subtitle: 'SSL / TLS Mode' },
-  { id: 'dnstt', title: 'DNSTT Tunnel', subtitle: 'DNS Tunneling Mode' },
-  { id: 'imported_config', title: 'Imported Config', subtitle: '.MYV File Profile' },
+  { id: 'wireguard_server', title: 'WireGuard Verified Server', subtitle: 'Uses backend-registered WireGuard endpoint' },
+  { id: 'wireguard_manual', title: 'Manual WireGuard Peer (.conf)', subtitle: 'Enter your VPS WireGuard PublicKey & Endpoint' },
+  { id: 'imported_config', title: 'Imported WireGuard Profile', subtitle: 'Loaded from .conf or .myv file' },
 ];
 
 export const HomeScreen: React.FC<HomeScreenProps> = ({
   status,
   stats,
+  vipStatus,
+  servers,
   selectedServer,
   onSelectServer,
   selectedPort,
@@ -88,16 +92,17 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   customSetupEnabled,
   onToggleCustomSetup,
   customSetup,
-  onUpdateCustomSetup,
+  onUpdateWireGuard,
+  onGenerateKeyPair,
   onStartVpn,
   onStopVpn,
-  onOpenPayloadGen,
   onOpenImportConfig,
   onOpenExportConfig,
   onOpenServerApps,
   onOpenUpdate,
   onOpenVipPayment,
   onOpenVipRoom,
+  onRefreshBackend,
   accentColor = 'blue',
 }) => {
   const [showServerMenu, setShowServerMenu] = useState(false);
@@ -121,11 +126,24 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   }, [showConfigDotsMenu]);
 
   const isConnected = status === 'connected';
-  const isConnecting = status === 'connecting' || status === 'authenticating';
-  const isBusy = isConnecting || status === 'disconnecting';
+  const isBusy = status === 'connecting' || status === 'disconnecting';
 
   const currentModeInfo = CONNECTION_MODES.find(m => m.id === connectionMode) || CONNECTION_MODES[0];
   const currentSimInfo = SIM_CARRIERS.find(s => s.id === simCarrier) || SIM_CARRIERS[0];
+
+  const wg = customSetup.wireguard;
+  const effectiveEndpointHost =
+    connectionMode === 'wireguard_server' && selectedServer.endpointHost
+      ? selectedServer.endpointHost
+      : wg.endpointHost;
+  const effectivePublicKey =
+    connectionMode === 'wireguard_server' && selectedServer.serverPublicKey
+      ? selectedServer.serverPublicKey
+      : wg.peerPublicKey;
+
+  const isNative = stats.nativeAndroidActive;
+  const isVipActive = Boolean(vipStatus?.isVipActive);
+  const remainingSeconds = vipStatus?.remainingSeconds ?? 0;
 
   const getStartButtonGradient = () => {
     switch (accentColor) {
@@ -145,11 +163,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
 
   return (
     <div className="flex-1 w-full max-w-xl mx-auto p-3 sm:p-4 pb-20 flex flex-col gap-3 select-none">
-      
-      {/* Main Luxury VPN Card */}
-      <div className="bg-white/75 dark:bg-[#050B1A]/58 backdrop-blur-[2px] rounded-2xl shadow-xl border border-slate-200/80 dark:border-[#1D4ED8]/45 p-4 relative">
-        
-        {/* Brand Banner + 124h Countdown Timer */}
+
+      {/* Main Luxury WireGuard VPN Card */}
+      <div className="bg-white/75 dark:bg-[#050B1A]/60 backdrop-blur-[2px] rounded-2xl shadow-xl border border-slate-200/80 dark:border-[#1D4ED8]/45 p-4 relative">
+
+        {/* Brand Banner + Backend-Verified VIP Timer */}
         <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-100 dark:border-blue-500/20 gap-2">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="p-0.5 rounded-full bg-white/10 shadow-sm flex items-center justify-center shrink-0">
@@ -159,21 +177,27 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               <div className="text-xs sm:text-sm font-black tracking-tight text-slate-900 dark:text-white truncate">
                 Mutiganda Yvan
               </div>
-              <p className="text-[10px] text-slate-500 dark:text-[#06B6D4] truncate">
-                No-VPS Edge · All Country · All SIM Card
+              <p className="text-[10px] text-slate-600 dark:text-[#06B6D4] truncate font-semibold">
+                WireGuard GoBackend · {isNative ? 'Android VpnService Ready' : 'Web Config & Backend Console'}
               </p>
             </div>
           </div>
 
-          {/* 124h Countdown Timer & Redeem +50h Quick Action */}
+          {/* Backend-Verified VIP Countdown */}
           <div className="flex items-center gap-1.5 shrink-0">
-            <div className="px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-slate-950/90 border border-slate-200 dark:border-emerald-500/40 text-right">
-              <div className="text-[9px] font-bold text-slate-500 dark:text-emerald-400 flex items-center justify-end gap-1">
+            <div className={`px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-slate-950/90 border text-right ${
+              isVipActive ? 'border-emerald-500/50' : 'border-slate-200 dark:border-amber-500/35'
+            }`}>
+              <div className={`text-[9px] font-bold flex items-center justify-end gap-1 ${
+                isVipActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'
+              }`}>
                 <Clock className="w-2.5 h-2.5" />
-                <span>TIME LEFT</span>
+                <span>{isVipActive ? 'VIP BACKEND TIME' : 'NO ACTIVE VIP'}</span>
               </div>
-              <div className="text-[11px] font-mono font-black tabular-nums text-slate-900 dark:text-[#10B981]">
-                {vpnSimulator.formatCountdown(stats.remainingSeconds)}
+              <div className={`text-[11px] font-mono font-black tabular-nums ${
+                isVipActive ? 'text-slate-900 dark:text-[#10B981]' : 'text-slate-600 dark:text-amber-300'
+              }`}>
+                {vpnBridge.formatCountdown(remainingSeconds)}
               </div>
             </div>
 
@@ -181,27 +205,44 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               <button
                 onClick={onOpenVipRoom}
                 className="px-2 py-1.5 rounded-xl bg-[#10B981]/15 hover:bg-[#10B981]/25 border border-[#10B981]/40 text-emerald-700 dark:text-[#10B981] text-[10px] font-black flex items-center gap-1 cursor-pointer transition-colors"
-                title="Redeem +50 Hours Time"
+                title="Redeem VIP Code on Backend"
               >
                 <Gift className="w-3.5 h-3.5" />
-                <span>+50H</span>
+                <span>VIP</span>
               </button>
             )}
           </div>
         </div>
 
-        {/* Top Grid: SELECT SERVER and SELECT PORT */}
+        {/* Native / Browser Mode Honest Notice */}
+        {!isNative && (
+          <div className="mb-3 p-2.5 rounded-xl bg-amber-500/15 border border-amber-400/40 text-[11px] text-amber-900 dark:text-amber-200 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+            <div>
+              <strong>Android APK irakenewe kuri Tunnel:</strong> Uri muri browser. Fungura iyi app muri Android APK kugira ngo ukoreshe <strong>WireGuard GoBackend</strong> nyayo kuri <code className="font-mono">tun0</code>.
+            </div>
+          </div>
+        )}
+
+        {/* Top Grid: WIREGUARD SERVER and PORT */}
         <div className="grid grid-cols-12 gap-3 pb-3 border-b border-slate-100 dark:border-blue-500/20">
-          
+
           {/* SELECT SERVER */}
           <div className="col-span-8 relative">
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-[10px] sm:text-[11px] font-bold tracking-wider text-slate-500 dark:text-slate-400 uppercase">
-                SELECT SERVER
+                WIREGUARD SERVER
               </span>
-              <span className="text-[10px] font-bold text-emerald-600 dark:text-[#10B981]">
-                Built-in · No VPS
-              </span>
+              {onRefreshBackend && (
+                <button
+                  type="button"
+                  onClick={onRefreshBackend}
+                  className="text-[10px] font-bold text-[#06B6D4] hover:underline flex items-center gap-1 cursor-pointer"
+                >
+                  <RefreshCw className="w-2.5 h-2.5" />
+                  <span>Sync ({servers.length})</span>
+                </button>
+              )}
             </div>
 
             <button
@@ -222,8 +263,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                   <div className="text-xs sm:text-sm font-bold text-slate-800 dark:text-white truncate">
                     {selectedServer.name}
                   </div>
-                  <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                    {selectedServer.country} · <span className="text-emerald-600 dark:text-[#10B981] font-semibold">{selectedServer.ping}ms</span>
+                  <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate font-mono">
+                    {effectiveEndpointHost ? `${effectiveEndpointHost}:${selectedPort}` : 'Set WireGuard Endpoint'}
                   </div>
                 </div>
               </div>
@@ -233,45 +274,66 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             {showServerMenu && (
               <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-[#050B1A] rounded-xl shadow-2xl border border-slate-200 dark:border-blue-500/40 py-1.5 z-40 max-h-72 overflow-y-auto">
                 <div className="px-3 py-1.5 text-[10px] font-bold tracking-wider uppercase text-blue-600 dark:text-[#06B6D4] border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
-                  <span>🇷🇼 Built-In Cloud &amp; Rwanda Servers</span>
-                  <span className="text-[9px] text-emerald-500">No VPS Required</span>
+                  <span>Verified WireGuard Relays</span>
+                  <span className="text-[9px] text-emerald-500">Backend DB</span>
                 </div>
 
-                {SERVERS.map(srv => (
-                  <button
-                    key={srv.id}
-                    onClick={() => {
-                      onSelectServer(srv);
-                      setShowServerMenu(false);
-                    }}
-                    className={`w-full flex items-center justify-between px-3 py-2 text-left hover:bg-blue-50 dark:hover:bg-slate-800/80 transition-colors cursor-pointer ${
-                      selectedServer.id === srv.id ? 'bg-blue-50/80 dark:bg-blue-950/40' : ''
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5 truncate">
-                      <span className="text-lg shrink-0">{srv.flag}</span>
-                      <div className="truncate">
-                        <div className="text-xs font-bold text-slate-800 dark:text-white truncate flex items-center gap-1.5">
-                          <span>{srv.name}</span>
-                          {srv.vipTier === 'PREMIUM' && (
-                            <span className="text-[9px] font-black text-amber-500">VIP</span>
-                          )}
-                        </div>
-                        <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                          {srv.country} · Load {srv.load}%
+                {servers.length === 0 ? (
+                  <div className="px-3 py-3 text-[11px] text-slate-500 dark:text-slate-400 space-y-1">
+                    <p className="font-bold text-slate-700 dark:text-slate-200">
+                      Nta WireGuard Server yanditswe kuri backend.
+                    </p>
+                    <p>
+                      Admin ashobora kwandika server nyayo muri VIP Room, cyangwa ukore import ya <code className="font-mono">.conf</code> yawe.
+                    </p>
+                  </div>
+                ) : (
+                  servers.map(srv => (
+                    <button
+                      key={srv.id}
+                      onClick={() => {
+                        onSelectServer(srv);
+                        onSelectPort(srv.endpointPort);
+                        onSelectConnectionMode('wireguard_server');
+                        setShowServerMenu(false);
+                      }}
+                      className={`w-full flex items-center justify-between px-3 py-2 text-left hover:bg-blue-50 dark:hover:bg-slate-800/80 transition-colors cursor-pointer ${
+                        selectedServer.id === srv.id ? 'bg-blue-50/80 dark:bg-blue-950/40' : ''
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 truncate">
+                        <span className="text-lg shrink-0">{srv.flag}</span>
+                        <div className="truncate">
+                          <div className="text-xs font-bold text-slate-800 dark:text-white truncate flex items-center gap-1.5">
+                            <span>{srv.name}</span>
+                            {srv.requiresVip && (
+                              <span className="text-[9px] font-black text-amber-500">VIP</span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate font-mono">
+                            {srv.endpointHost}:{srv.endpointPort}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className={`text-[11px] font-mono font-bold ${srv.ping < 20 ? 'text-[#10B981]' : 'text-[#06B6D4]'}`}>
-                        {srv.ping}ms
-                      </span>
                       {selectedServer.id === srv.id && (
-                        <Check className="w-4 h-4 text-blue-500" />
+                        <Check className="w-4 h-4 text-blue-500 shrink-0" />
                       )}
-                    </div>
-                  </button>
-                ))}
+                    </button>
+                  ))
+                )}
+
+                <div className="h-px bg-slate-100 dark:bg-slate-800 my-1" />
+                <button
+                  onClick={() => {
+                    onSelectConnectionMode('wireguard_manual');
+                    onToggleCustomSetup(true);
+                    setShowServerMenu(false);
+                  }}
+                  className="w-full px-3 py-2 text-left text-xs font-bold text-[#06B6D4] hover:bg-blue-50 dark:hover:bg-slate-800/80 cursor-pointer flex items-center gap-2"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>Enter Custom WireGuard Peer (.conf)</span>
+                </button>
               </div>
             )}
           </div>
@@ -279,7 +341,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           {/* SELECT PORT */}
           <div className="col-span-4 relative">
             <span className="block text-[10px] sm:text-[11px] font-bold tracking-wider text-slate-500 dark:text-slate-400 mb-1.5 uppercase">
-              SELECT PORT
+              UDP PORT
             </span>
 
             <button
@@ -296,7 +358,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 <div className="text-xs sm:text-sm font-bold text-slate-800 dark:text-white">
                   P {selectedPort}
                 </div>
-                <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">Port</div>
+                <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">WireGuard</div>
               </div>
               <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
             </button>
@@ -304,13 +366,14 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             {showPortMenu && (
               <div className="absolute top-full right-0 w-48 mt-1 bg-white dark:bg-[#050B1A] rounded-xl shadow-2xl border border-slate-200 dark:border-blue-500/40 py-1 z-40 max-h-56 overflow-y-auto">
                 <div className="px-3 py-1.5 text-[10px] font-semibold tracking-wider uppercase text-slate-400 border-b border-slate-100 dark:border-slate-800">
-                  Available Ports
+                  WireGuard UDP Ports
                 </div>
-                {AVAILABLE_PORTS.map(p => (
+                {WIREGUARD_PORTS.map(p => (
                   <button
                     key={p.value}
                     onClick={() => {
                       onSelectPort(p.value);
+                      onUpdateWireGuard({ endpointPort: p.value });
                       setShowPortMenu(false);
                     }}
                     className={`w-full flex items-center justify-between px-3 py-2 text-left hover:bg-blue-50 dark:hover:bg-slate-800/80 transition-colors cursor-pointer ${
@@ -329,14 +392,14 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </div>
         </div>
 
-        {/* All SIM Cards Selector Row */}
+        {/* SIM Carrier Row */}
         <div className="pt-2.5 pb-2 border-b border-slate-100 dark:border-blue-500/20 relative">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-cyan-300">
               <Smartphone className="w-3.5 h-3.5 text-[#10B981]" />
-              <span>SIM CARD CARRIER</span>
+              <span>NETWORK / SIM CARRIER</span>
             </div>
-            <span className="text-[10px] font-bold text-[#10B981]">Works on All SIM Cards</span>
+            <span className="text-[10px] font-bold text-[#10B981]">Real Android Routing</span>
           </div>
 
           <button
@@ -376,42 +439,41 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           )}
         </div>
 
-        {/* Data Counter */}
+        {/* Real WireGuard TX / RX Counter from GoBackend.getStatistics() */}
         <div className="my-3 flex items-center justify-center gap-4 sm:gap-6 px-4 py-2 rounded-xl bg-slate-100/90 dark:bg-slate-950/80 border border-slate-200/80 dark:border-blue-500/25 text-xs font-mono tabular-nums text-slate-800 dark:text-slate-200">
           <div className="flex items-center gap-1.5">
             <ArrowUpCircle className="w-4 h-4 text-[#06B6D4]" />
-            <span>Upload: {vpnSimulator.formatBytes(stats.uploadBytes)}</span>
+            <span>TX: {vpnBridge.formatBytes(stats.txBytes)}</span>
           </div>
           <span className="text-slate-300 dark:text-slate-700">|</span>
           <div className="flex items-center gap-1.5">
             <ArrowDownCircle className="w-4 h-4 text-[#10B981]" />
-            <span>Download: {vpnSimulator.formatBytes(stats.downloadBytes)}</span>
+            <span>RX: {vpnBridge.formatBytes(stats.rxBytes)}</span>
           </div>
         </div>
 
-        {/* Connection Mode + 3-Dot Config Menu (Import / Export) + Custom Setup Switch */}
+        {/* WireGuard Mode + 3-Dot Import/Export + Peer Setup Switch */}
         <div className="pt-1">
           <div className="flex items-center justify-between mb-2 gap-2">
             <span className="text-[10px] sm:text-[11px] font-bold tracking-wider text-slate-500 dark:text-slate-400 uppercase">
-              CONNECTION MODE
+              TUNNEL PROTOCOL
             </span>
 
             <div className="flex items-center gap-2.5">
-              {/* 3 Dots (⋮) Button -> Shows Import Config (.myv) */}
+              {/* 3 Dots (⋮) Button -> Shows Import WireGuard / .myv */}
               <div className="relative" ref={dotsMenuRef}>
                 <button
                   type="button"
                   onClick={() => setShowConfigDotsMenu(prev => !prev)}
                   className="px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-cyan-500/35 hover:border-cyan-400 text-slate-700 dark:text-cyan-300 flex items-center gap-1 text-[10px] font-bold cursor-pointer transition-colors"
                   aria-label="Import and Export Menu"
-                  title="⋮ Import / Export Config"
                 >
                   <MoreVertical className="w-3.5 h-3.5 shrink-0" />
                   <span>Import / Export</span>
                 </button>
 
                 {showConfigDotsMenu && (
-                  <div className="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-[#050B1A] rounded-xl shadow-2xl border border-slate-200 dark:border-cyan-500/40 py-1.5 z-50">
+                  <div className="absolute right-0 top-full mt-1 w-56 bg-white dark:bg-[#050B1A] rounded-xl shadow-2xl border border-slate-200 dark:border-cyan-500/40 py-1.5 z-50">
                     <button
                       onClick={() => {
                         setShowConfigDotsMenu(false);
@@ -420,7 +482,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                       className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-extrabold text-blue-600 dark:text-[#06B6D4] hover:bg-blue-50 dark:hover:bg-slate-800 text-left cursor-pointer"
                     >
                       <Download className="w-4 h-4" />
-                      <span>Import Config (.myv)</span>
+                      <span>Import (.conf / .myv)</span>
                     </button>
                     <button
                       onClick={() => {
@@ -430,16 +492,16 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                       className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 text-left cursor-pointer"
                     >
                       <Upload className="w-4 h-4" />
-                      <span>Export Config (.myv)</span>
+                      <span>Export (.conf / .myv)</span>
                     </button>
                   </div>
                 )}
               </div>
 
-              {/* Custom Setup Switch */}
+              {/* WireGuard Peer Setup Switch */}
               <div className="flex items-center gap-1.5">
                 <span className="text-[10px] sm:text-[11px] font-bold tracking-wider text-slate-600 dark:text-slate-300 uppercase">
-                  CUSTOM SETUP
+                  WG KEYS
                 </span>
                 <button
                   type="button"
@@ -475,7 +537,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             >
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-full bg-blue-600/15 dark:bg-blue-500/20 flex items-center justify-center text-blue-600 dark:text-[#06B6D4]">
-                  <Rocket className="w-4 h-4" />
+                  <Shield className="w-4 h-4" />
                 </div>
                 <div>
                   <div className="text-xs sm:text-sm font-bold text-slate-800 dark:text-white">
@@ -496,6 +558,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     key={mode.id}
                     onClick={() => {
                       onSelectConnectionMode(mode.id);
+                      if (mode.id === 'wireguard_manual') {
+                        onToggleCustomSetup(true);
+                      }
                       setShowModeMenu(false);
                     }}
                     className={`w-full flex items-center justify-between px-3.5 py-2.5 text-left hover:bg-blue-50 dark:hover:bg-slate-800/80 transition-colors cursor-pointer ${
@@ -503,7 +568,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                     }`}
                   >
                     <div className="flex items-center gap-3">
-                      <Rocket className="w-4 h-4 text-[#06B6D4]" />
+                      <Shield className="w-4 h-4 text-[#06B6D4]" />
                       <div>
                         <div className="text-xs font-semibold text-slate-800 dark:text-white">{mode.title}</div>
                         <div className="text-[10px] text-slate-500 dark:text-slate-400">{mode.subtitle}</div>
@@ -519,110 +584,114 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </div>
         </div>
 
-        {/* CUSTOM SETUP EXPANDED DRAWER */}
+        {/* WIREGUARD KEY & ENDPOINT SETUP DRAWER */}
         {customSetupEnabled && (
-          <div className="mt-3 p-3 rounded-xl bg-blue-50/50 dark:bg-slate-900/80 border border-blue-200/80 dark:border-cyan-500/30 text-xs">
-            <div className="flex items-center justify-between mb-2">
+          <div className="mt-3 p-3 rounded-xl bg-blue-50/50 dark:bg-slate-900/85 border border-blue-200/80 dark:border-cyan-500/35 text-xs space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
               <span className="font-bold text-blue-800 dark:text-cyan-300 flex items-center gap-1.5">
                 <Sliders className="w-3.5 h-3.5" />
-                Custom {currentModeInfo.title} Parameters
+                WireGuard Interface &amp; Peer Config
               </span>
-              {connectionMode === 'custom_payload' && (
-                <button
-                  onClick={onOpenPayloadGen}
-                  className="text-[10px] font-semibold text-blue-600 dark:text-[#06B6D4] hover:underline flex items-center gap-1 cursor-pointer"
-                >
-                  <Sparkles className="w-3 h-3" />
-                  Payload Generator
-                </button>
+              <button
+                type="button"
+                onClick={onGenerateKeyPair}
+                className="px-2 py-1 rounded-lg bg-[#1D4ED8] hover:bg-blue-600 text-white text-[10px] font-bold cursor-pointer flex items-center gap-1"
+              >
+                <KeyRound className="w-3 h-3" />
+                <span>Generate KeyPair</span>
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                [Interface] Client PrivateKey {isValidWireGuardKey(wg.privateKey) ? '✅' : '(Required)'}
+              </label>
+              <input
+                type="password"
+                value={wg.privateKey}
+                onChange={e => onUpdateWireGuard({ privateKey: e.target.value })}
+                placeholder="Paste Base64 PrivateKey or tap Generate KeyPair"
+                className="w-full p-2 text-[11px] font-mono bg-white dark:bg-[#050B1A] border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-1 focus:ring-cyan-500"
+              />
+              {wg.publicKey && (
+                <p className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400 mt-1 truncate">
+                  Your PublicKey: {wg.publicKey}
+                </p>
               )}
             </div>
 
-            {connectionMode === 'custom_payload' && (
-              <div className="space-y-2">
-                <textarea
-                  rows={3}
-                  value={customSetup.payload}
-                  onChange={e => onUpdateCustomSetup({ payload: e.target.value })}
-                  placeholder="CONNECT [host_port] [protocol][crlf]Host: example.com[crlf][crlf]"
-                  className="w-full p-2 text-[11px] font-mono bg-white dark:bg-[#050B1A] border border-slate-300 dark:border-slate-700 rounded-md focus:ring-1 focus:ring-cyan-500 focus:outline-none"
-                />
-                <div className="grid grid-cols-2 gap-2">
-                  <input
-                    type="text"
-                    value={customSetup.proxyHost}
-                    onChange={e => onUpdateCustomSetup({ proxyHost: e.target.value })}
-                    placeholder="Proxy Host"
-                    className="w-full p-1.5 text-[11px] bg-white dark:bg-[#050B1A] border border-slate-300 dark:border-slate-700 rounded-md focus:outline-none"
-                  />
-                  <input
-                    type="text"
-                    value={customSetup.proxyPort}
-                    onChange={e => onUpdateCustomSetup({ proxyPort: e.target.value })}
-                    placeholder="Proxy Port"
-                    className="w-full p-1.5 text-[11px] bg-white dark:bg-[#050B1A] border border-slate-300 dark:border-slate-700 rounded-md focus:outline-none"
-                  />
-                </div>
-              </div>
-            )}
-
-            {connectionMode === 'custom_sni' && (
-              <input
-                type="text"
-                value={customSetup.sni}
-                onChange={e => onUpdateCustomSetup({ sni: e.target.value })}
-                placeholder="e.g. edge.cloudflare.com"
-                className="w-full p-2 text-xs bg-white dark:bg-[#050B1A] border border-slate-300 dark:border-slate-700 rounded-md focus:outline-none"
-              />
-            )}
-
-            {connectionMode === 'custom_host' && (
-              <input
-                type="text"
-                value={customSetup.hostHeader}
-                onChange={e => onUpdateCustomSetup({ hostHeader: e.target.value })}
-                placeholder="e.g. cdn.cloudflare.net"
-                className="w-full p-2 text-xs bg-white dark:bg-[#050B1A] border border-slate-300 dark:border-slate-700 rounded-md focus:outline-none"
-              />
-            )}
-
-            {connectionMode === 'dnstt' && (
-              <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  Interface Address
+                </label>
                 <input
                   type="text"
-                  value={customSetup.dnsttDomain}
-                  onChange={e => onUpdateCustomSetup({ dnsttDomain: e.target.value })}
-                  placeholder="t.myv-dns.org"
-                  className="w-full p-1.5 text-xs bg-white dark:bg-[#050B1A] border border-slate-300 dark:border-slate-700 rounded-md focus:outline-none"
+                  value={wg.address}
+                  onChange={e => onUpdateWireGuard({ address: e.target.value })}
+                  placeholder="10.0.0.2/32"
+                  className="w-full p-1.5 text-[11px] font-mono bg-white dark:bg-[#050B1A] border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none"
                 />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  DNS Servers
+                </label>
                 <input
                   type="text"
-                  value={customSetup.dnsttPublicKey}
-                  onChange={e => onUpdateCustomSetup({ dnsttPublicKey: e.target.value })}
-                  placeholder="DNSTT Public Key"
-                  className="w-full p-1.5 text-xs font-mono bg-white dark:bg-[#050B1A] border border-slate-300 dark:border-slate-700 rounded-md focus:outline-none"
+                  value={wg.dns}
+                  onChange={e => onUpdateWireGuard({ dns: e.target.value })}
+                  placeholder="1.1.1.1, 8.8.8.8"
+                  className="w-full p-1.5 text-[11px] font-mono bg-white dark:bg-[#050B1A] border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none"
                 />
               </div>
-            )}
+            </div>
 
-            {connectionMode === 'imported_config' && (
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
-                  <Lock className="w-3.5 h-3.5 text-[#06B6D4]" />
-                  {customSetup.importedConfigName || 'No profile loaded'}
-                </span>
-                <button
-                  onClick={onOpenImportConfig}
-                  className="px-2.5 py-1 text-[10px] font-bold bg-[#1D4ED8] text-white rounded hover:bg-blue-600 transition-colors cursor-pointer"
-                >
-                  Import .MYV File
-                </button>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                [Peer] Server PublicKey {isValidWireGuardKey(effectivePublicKey) ? '✅' : '(Required)'}
+              </label>
+              <input
+                type="text"
+                value={effectivePublicKey}
+                disabled={connectionMode === 'wireguard_server' && Boolean(selectedServer.serverPublicKey)}
+                onChange={e => onUpdateWireGuard({ peerPublicKey: e.target.value })}
+                placeholder="Server Base64 WireGuard PublicKey"
+                className="w-full p-2 text-[11px] font-mono bg-white dark:bg-[#050B1A] border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none disabled:opacity-70"
+              />
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-2">
+                <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  [Peer] Endpoint Host / IP
+                </label>
+                <input
+                  type="text"
+                  value={effectiveEndpointHost}
+                  disabled={connectionMode === 'wireguard_server' && Boolean(selectedServer.endpointHost)}
+                  onChange={e => onUpdateWireGuard({ endpointHost: e.target.value })}
+                  placeholder="vpn.yourdomain.com"
+                  className="w-full p-1.5 text-[11px] font-mono bg-white dark:bg-[#050B1A] border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none disabled:opacity-70"
+                />
               </div>
-            )}
+              <div>
+                <label className="block text-[10px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  AllowedIPs
+                </label>
+                <input
+                  type="text"
+                  value={wg.allowedIps}
+                  onChange={e => onUpdateWireGuard({ allowedIps: e.target.value })}
+                  placeholder="0.0.0.0/0"
+                  className="w-full p-1.5 text-[11px] font-mono bg-white dark:bg-[#050B1A] border border-slate-300 dark:border-slate-700 rounded-lg focus:outline-none"
+                />
+              </div>
+            </div>
           </div>
         )}
 
-        {/* MAIN VPN START / STOP BUTTON */}
+        {/* MAIN WIREGUARD CONNECT / DISCONNECT BUTTON */}
         <div className="mt-4">
           <button
             onClick={isConnected ? onStopVpn : onStartVpn}
@@ -638,32 +707,32 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             {isBusy ? (
               <>
                 <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                <span>{status === 'connecting' ? 'CONNECTING...' : 'AUTHENTICATING...'}</span>
+                <span>{status === 'connecting' ? 'STARTING WIREGUARD...' : 'STOPPING TUNNEL...'}</span>
               </>
             ) : isConnected ? (
               <>
                 <Square className="w-4 h-4 fill-white" />
-                <span>STOP VPN</span>
+                <span>DISCONNECT WIREGUARD</span>
               </>
             ) : (
               <>
                 <Play className="w-4 h-4 fill-current" />
-                <span>START VPN</span>
+                <span>CONNECT WIREGUARD</span>
               </>
             )}
           </button>
         </div>
 
-        {/* Connection Status Banner */}
+        {/* Real Service Connection Status Banner */}
         <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-blue-500/20 flex items-center justify-between text-xs gap-2">
           <div className="font-semibold text-[11px] uppercase">
             {isConnected ? (
               <span className="text-[#10B981] font-extrabold">
-                CONNECTED · SHIELD ACTIVE
+                CONNECTED · WIREGUARD UP
               </span>
             ) : isBusy ? (
               <span className="text-[#FBBF24] font-bold">
-                CONNECTING...
+                {status.toUpperCase()}...
               </span>
             ) : (
               <span className="text-slate-500 dark:text-slate-400">DISCONNECTED</span>
@@ -671,18 +740,21 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </div>
 
           <div className="text-[10px] font-mono text-slate-500 dark:text-cyan-300 truncate">
-            {isConnected ? `IP: ${stats.assignedIp}` : selectedServer.name}
+            {isConnected
+              ? `${wg.address} · ${vpnBridge.formatCountdown(stats.connectedSeconds)}`
+              : effectiveEndpointHost
+              ? `${effectiveEndpointHost}:${selectedPort}`
+              : 'No Endpoint Selected'}
           </div>
         </div>
 
-        {/* Yellow & Green Anti-Hacking / Anti-Spam Banner when Connected */}
         {isConnected && (
           <div className="mt-2.5 p-2.5 rounded-xl bg-gradient-to-r from-amber-500/15 via-emerald-500/15 to-amber-500/10 border border-amber-400/45 flex items-center justify-between gap-2 text-[11px]">
             <span className="font-extrabold bg-gradient-to-r from-[#FBBF24] to-[#10B981] bg-clip-text text-transparent">
-              Anti-Hacking &amp; Anti-Spam Premium Server Active
+              WireGuard ChaCha20-Poly1305 Tunnel Active ({stats.tunnelName})
             </span>
             <span className="text-[10px] font-mono font-bold text-[#10B981] shrink-0">
-              {vpnSimulator.formatCountdown(stats.remainingSeconds)}
+              {stats.latestHandshakeEpochMs > 0 ? 'Handshake OK' : 'Waiting peer handshake'}
             </span>
           </div>
         )}
@@ -727,21 +799,21 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             <Activity className="w-4 h-4" />
           </div>
           <div>
-            <div className="text-xs font-bold text-slate-800 dark:text-white">Server Ping Test</div>
-            <div className="text-[10px] text-slate-500 dark:text-slate-400">No-VPS Edge Nodes</div>
+            <div className="text-xs font-bold text-slate-800 dark:text-white">Endpoint Probe</div>
+            <div className="text-[10px] text-slate-500 dark:text-slate-400">Real DNS &amp; Port Check</div>
           </div>
         </button>
 
         <button
-          onClick={onOpenPayloadGen}
+          onClick={onOpenImportConfig}
           className="p-3 bg-white/75 dark:bg-[#050B1A]/60 backdrop-blur-[2px] rounded-xl border border-slate-200/80 dark:border-blue-500/35 hover:border-cyan-400 transition-all flex items-center gap-2.5 text-left shadow-xs cursor-pointer"
         >
           <div className="w-8 h-8 rounded-lg bg-indigo-100 dark:bg-indigo-950/70 text-[#1D4ED8] dark:text-cyan-300 flex items-center justify-center shrink-0">
-            <Sparkles className="w-4 h-4" />
+            <Lock className="w-4 h-4" />
           </div>
           <div>
-            <div className="text-xs font-bold text-slate-800 dark:text-white">Payload Tool</div>
-            <div className="text-[10px] text-slate-500 dark:text-slate-400">Custom HTTP injector</div>
+            <div className="text-xs font-bold text-slate-800 dark:text-white">Import .CONF</div>
+            <div className="text-[10px] text-slate-500 dark:text-slate-400">WireGuard Profile</div>
           </div>
         </button>
 
@@ -754,8 +826,8 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
               <Gift className="w-4 h-4" />
             </div>
             <div>
-              <div className="text-xs font-bold text-slate-800 dark:text-white">Redeem +50h</div>
-              <div className="text-[10px] text-slate-500 dark:text-slate-400">VIP Room &amp; Codes</div>
+              <div className="text-xs font-bold text-slate-800 dark:text-white">Redeem &amp; Admin</div>
+              <div className="text-[10px] text-slate-500 dark:text-slate-400">Backend Verified</div>
             </div>
           </button>
         )}
@@ -770,7 +842,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             </div>
             <div>
               <div className="text-xs font-bold text-slate-800 dark:text-white">App Update</div>
-              <div className="text-[10px] text-slate-500 dark:text-slate-400">Get New Version</div>
+              <div className="text-[10px] text-slate-500 dark:text-slate-400">Version &amp; Sync</div>
             </div>
           </button>
         )}

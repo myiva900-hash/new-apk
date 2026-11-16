@@ -174,14 +174,11 @@ jobs:
           ## Mutiganda Yvan VPN v6 - Official Release
 
           - **Brand**: Mutiganda Yvan VPN v6
-          - **UI Redesign**: Premium Dark Navy & Blue Neon dashboard with glowing elements
-          - **Official Logo**: Embedded MYV Shield Logo with Rwanda Sun motif
-          - **Servers**: Gisozi VIP Node 01, Rwamagana High-Speed 02, Kayonza Ultra-Tunnel 03
-          - **VIP Payment**: MTN MoMo & MoMo Pay Code 2238763 (Kinyarwanda & English)
+          - **VPN Engine**: Official WireGuard (`com.wireguard.android:tunnel` GoBackend) over Android VpnService
+          - **Servers**: Verified WireGuard endpoints from backend registry or imported `.conf` profiles
+          - **VIP & Redeem**: Backend-enforced single-use redeem codes and MTN MoMo verification (`0780949484` / Code `2238763`)
           - **Bilingual Ticker**: Slow smooth moving short message in Kinyarwanda & English
-          - **Security**: Mutiganda Yvan VPN uses strong encryption.
-          - **Voice Feedback**: Real audio speech announcing "Connected" and "Disconnected"
-          - **Real Android Service**: Full VpnService TUN interface with hardware-accelerated UI
+          - **Security**: Mutiganda Yvan VPN uses strong ChaCha20-Poly1305 / WireGuard encryption
           - **Target Environment**: Android 8.0+ (API 26+)
           EOF
 

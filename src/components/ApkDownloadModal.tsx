@@ -47,7 +47,7 @@ export const ApkDownloadModal: React.FC<ApkDownloadModalProps> = ({ isOpen, onCl
           <div className="p-3.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-700/60 rounded-xl flex items-start gap-3">
             <CheckCircle className="w-5 h-5 text-emerald-600 dark:text-[#10B981] shrink-0 mt-0.5" />
             <div className="text-xs text-emerald-900 dark:text-emerald-200 leading-relaxed">
-              <span className="font-bold">APK v6 irateguye neza 100%!</span> Ifite 124h Countdown, +50h Redeem Codes, VIP Room, No-VPS Servers, na Hacking Matrix Background.
+              <span className="font-bold">APK v6 irateguye neza!</span> Ifite WireGuard GoBackend (real Android VpnService), Backend VIP &amp; Redeem Codes, na Hacking Matrix Background.
             </div>
           </div>
 
@@ -115,7 +115,7 @@ export const ApkDownloadModal: React.FC<ApkDownloadModalProps> = ({ isOpen, onCl
           <div className="p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-700/50 rounded-xl flex items-start gap-2 text-[11px] text-amber-800 dark:text-amber-300">
             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-[#FBBF24]" />
             <div>
-              <strong>Icyitonderwa:</strong> Mutiganda Yvan VPN v6 ikora kuri SIM card zose kandi ntigombera VPS yihariye.
+              <strong>Icyitonderwa:</strong> Kugira ngo WireGuard VPN ikore mu kuri, ushyiramo WireGuard server endpoint nyayo (VPS/Relay) cyangwa ukora import ya file ya <code className="font-mono">.conf</code>.
             </div>
           </div>
         </div>

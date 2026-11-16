@@ -74,7 +74,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           </div>
 
           <p className="text-xs text-slate-600 dark:text-slate-300">
-            APK Nshya <strong>Mutiganda Yvan VPN v6</strong> ikora kuri SIM card zose, ifite 124h timer, +50h Redeem Codes, VIP Room, Hacking Matrix Background, na No-VPS Edge servers.
+            APK Nshya <strong>Mutiganda Yvan VPN v6</strong> ikoresha WireGuard GoBackend kuri Android VpnService, Backend VIP &amp; Redeem Verification, na Hacking Matrix Background.
           </p>
 
           <div className="flex flex-col sm:flex-row gap-2 pt-1">

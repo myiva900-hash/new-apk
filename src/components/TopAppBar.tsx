@@ -234,7 +234,7 @@ export const TopAppBar: React.FC<TopAppBarProps> = ({
                   className="w-full flex items-center gap-3 px-4 py-2 text-xs font-semibold hover:bg-blue-50 dark:hover:bg-blue-950/40 text-blue-700 dark:text-blue-400 text-left transition-colors cursor-pointer"
                 >
                   <Server className="w-4 h-4 text-blue-500" />
-                  <span>No-VPS Servers Ping</span>
+                  <span>WireGuard Endpoint Probe</span>
                 </button>
 
                 <button

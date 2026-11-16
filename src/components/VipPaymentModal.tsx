@@ -11,20 +11,36 @@ import {
   Phone,
   Volume2,
   Square,
-  Play
+  Play,
+  Send,
+  Clock
 } from 'lucide-react';
+import { PaymentRecord } from '../types/vpn';
+import { backendApi } from '../services/api';
 import { soundService } from '../services/sound';
 
 interface VipPaymentModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onPaymentUpdated?: () => void;
 }
 
-export const VipPaymentModal: React.FC<VipPaymentModalProps> = ({ isOpen, onClose }) => {
+export const VipPaymentModal: React.FC<VipPaymentModalProps> = ({
+  isOpen,
+  onClose,
+  onPaymentUpdated,
+}) => {
   const [lang, setLang] = useState<'RW' | 'EN'>('RW');
   const [selectedPlan, setSelectedPlan] = useState<'1week' | '2months' | '3years'>('1week');
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [speakingStep, setSpeakingStep] = useState<number | null>(null);
+
+  // Payment Verification Form
+  const [payerPhone, setPayerPhone] = useState('');
+  const [momoTxId, setMomoTxId] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [submitFeedback, setSubmitFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const [myPayments, setMyPayments] = useState<PaymentRecord[]>([]);
 
   useEffect(() => {
     const unsub = soundService.subscribeGuideStep(step => {
@@ -34,10 +50,21 @@ export const VipPaymentModal: React.FC<VipPaymentModalProps> = ({ isOpen, onClos
   }, []);
 
   useEffect(() => {
-    if (!isOpen) {
+    if (isOpen) {
+      loadMyPayments();
+    } else {
       soundService.stopVoiceGuide();
     }
   }, [isOpen]);
+
+  const loadMyPayments = async () => {
+    try {
+      const list = await backendApi.getMyPayments();
+      setMyPayments(list);
+    } catch {
+      // Ignore if offline
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -92,10 +119,37 @@ export const VipPaymentModal: React.FC<VipPaymentModalProps> = ({ isOpen, onClos
 
   const activePlan = plans.find(p => p.id === selectedPlan) || plans[0];
 
+  const handleSubmitPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setSubmitFeedback(null);
+    try {
+      const res = await backendApi.submitPayment({
+        planId: selectedPlan,
+        payerPhone,
+        momoTxId,
+      });
+      setSubmitFeedback({
+        ok: true,
+        text: `Ubusabe (${res.payment.id}) bwoherejwe kuri backend! Buri mu kugenzurwa (PENDING). Iyo bwemejwe, amasaha ya VIP yiyongeraho ako kanya.`,
+      });
+      setMomoTxId('');
+      await loadMyPayments();
+      onPaymentUpdated?.();
+    } catch (err) {
+      setSubmitFeedback({
+        ok: false,
+        text: err instanceof Error ? err.message : 'Kwohereza Transaction ID byanze.',
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const whatsappMessage = encodeURIComponent(
     lang === 'RW'
-      ? `Muraho Mutiganda Yvan! Nishyuye ${activePlan.title} (${activePlan.price}) kuri MTN 0780949484 / CODE 2238763 (Yvan Mutiganda) - Unlimited Internet All Country All SIM Card. Dore screenshot yanjye:`
-      : `Hello Mutiganda Yvan! I just paid for ${activePlan.title} (${activePlan.price}) via MTN 0780949484 / CODE 2238763 (Yvan Mutiganda) - Unlimited Internet All Country All SIM Card. Here is my screenshot:`
+      ? `Muraho Mutiganda Yvan! Nishyuye ${activePlan.title} (${activePlan.price}) kuri MTN 0780949484 / CODE 2238763 (Yvan Mutiganda) · Device ID: ${backendApi.getDeviceId()}. Dore screenshot yanjye:`
+      : `Hello Mutiganda Yvan! I just paid for ${activePlan.title} (${activePlan.price}) via MTN 0780949484 / CODE 2238763 (Yvan Mutiganda) · Device ID: ${backendApi.getDeviceId()}. Here is my screenshot:`
   );
 
   const whatsappUrl = `https://wa.me/250787699523?text=${whatsappMessage}`;
@@ -108,7 +162,7 @@ export const VipPaymentModal: React.FC<VipPaymentModalProps> = ({ isOpen, onClos
   return (
     <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 select-none">
       <div className="bg-[#050B1A] text-white rounded-2xl max-w-md w-full max-h-[92vh] flex flex-col shadow-2xl border border-[#F59E0B]/50 overflow-hidden animate-in zoom-in-95 duration-150">
-        
+
         {/* Gold Metallic Header */}
         <div className="p-4 bg-gradient-to-r from-[#F59E0B] via-[#FBBF24] to-[#F59E0B] text-slate-950 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -121,8 +175,8 @@ export const VipPaymentModal: React.FC<VipPaymentModalProps> = ({ isOpen, onClos
               </h3>
               <p className="text-[11px] font-bold text-slate-900/85">
                 {lang === 'RW'
-                  ? '🇷🇼 MTN MoMo · Unlimited Internet All SIM Card'
-                  : '🇬🇧 MTN MoMo · Unlimited Internet All SIM Card'}
+                  ? '🇷🇼 MTN MoMo · Backend Payment Verification'
+                  : '🇬🇧 MTN MoMo · Backend Payment Verification'}
               </p>
             </div>
           </div>
@@ -181,7 +235,7 @@ export const VipPaymentModal: React.FC<VipPaymentModalProps> = ({ isOpen, onClos
 
         {/* Scrollable Content */}
         <div className="p-4 overflow-y-auto space-y-4 text-xs">
-          
+
           {/* 3 Selectable VIP Plan Cards */}
           <div>
             <div className="text-[11px] font-extrabold uppercase tracking-wider text-[#FBBF24] mb-2 flex items-center gap-1.5">
@@ -212,7 +266,7 @@ export const VipPaymentModal: React.FC<VipPaymentModalProps> = ({ isOpen, onClos
                         </span>
                       </div>
                       <div className="text-[10px] text-cyan-200 mt-0.5">
-                        Unlimited Internet · All Country · All SIM Card
+                        WireGuard VIP Access · All Country · All SIM Card
                       </div>
                     </div>
 
@@ -236,7 +290,6 @@ export const VipPaymentModal: React.FC<VipPaymentModalProps> = ({ isOpen, onClos
               <span className="text-[10px] font-black text-[#FBBF24]">RWANDA</span>
             </div>
 
-            {/* MTN Number */}
             <div className="p-2.5 rounded-xl bg-[#050B1A] border border-slate-800 flex items-center justify-between">
               <div>
                 <div className="text-[10px] text-slate-400">MTN Number</div>
@@ -251,7 +304,6 @@ export const VipPaymentModal: React.FC<VipPaymentModalProps> = ({ isOpen, onClos
               </button>
             </div>
 
-            {/* MoMo Pay CODE */}
             <div className="p-2.5 rounded-xl bg-[#050B1A] border border-slate-800 flex items-center justify-between">
               <div>
                 <div className="text-[10px] text-slate-400">MoMo Pay CODE</div>
@@ -266,7 +318,6 @@ export const VipPaymentModal: React.FC<VipPaymentModalProps> = ({ isOpen, onClos
               </button>
             </div>
 
-            {/* Registered Name */}
             <div className="p-2.5 rounded-xl bg-[#050B1A] border border-slate-800 flex items-center justify-between">
               <div>
                 <div className="text-[10px] text-slate-400">Registered Name</div>
@@ -275,7 +326,7 @@ export const VipPaymentModal: React.FC<VipPaymentModalProps> = ({ isOpen, onClos
               <span className="text-[10px] font-bold text-[#10B981]">✅ Verified</span>
             </div>
 
-            {/* One-tap Copy & Dial USSD Buttons */}
+            {/* USSD Buttons */}
             <div className="grid grid-cols-1 gap-2 pt-1">
               <div className="p-2.5 rounded-xl bg-[#050B1A]/90 border border-amber-500/30 flex items-center justify-between gap-2">
                 <div className="min-w-0">
@@ -325,6 +376,71 @@ export const VipPaymentModal: React.FC<VipPaymentModalProps> = ({ isOpen, onClos
             </div>
           </div>
 
+          {/* BACKEND PAYMENT VERIFICATION SUBMISSION FORM */}
+          <form onSubmit={handleSubmitPayment} className="p-3.5 rounded-2xl bg-slate-900/80 border border-emerald-500/40 space-y-2.5">
+            <div className="text-[11px] font-black uppercase tracking-wider text-[#10B981]">
+              ✅ Emeza Kwishyura Kuri Backend ({activePlan.title})
+            </div>
+            <p className="text-[10px] text-slate-300">
+              Umaze kwishyura kuri MoMo, andika nimero wakoresheje na Transaction ID iri muri SMS ya MTN kugira ngo backend ibigenzure iguhe VIP.
+            </p>
+            <input
+              type="tel"
+              required
+              value={payerPhone}
+              onChange={e => setPayerPhone(e.target.value)}
+              placeholder="Nimero yawe yishyuye (e.g. 078xxxxxxx)"
+              className="w-full px-3 py-2 rounded-xl bg-[#050B1A] border border-slate-700 text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-400"
+            />
+            <input
+              type="text"
+              required
+              value={momoTxId}
+              onChange={e => setMomoTxId(e.target.value)}
+              placeholder="MTN MoMo Transaction ID (e.g. 9823412054)"
+              className="w-full px-3 py-2 rounded-xl bg-[#050B1A] border border-slate-700 text-xs font-mono uppercase text-white focus:outline-none focus:ring-1 focus:ring-emerald-400"
+            />
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full py-2.5 px-4 rounded-xl bg-[#1D4ED8] hover:bg-blue-600 text-white font-black text-xs flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+            >
+              <Send className="w-3.5 h-3.5" />
+              <span>{submitting ? 'SENDING...' : 'OHEREZA BYEMEZWE KURI BACKEND'}</span>
+            </button>
+
+            {submitFeedback && (
+              <div
+                className={`p-2 rounded-xl text-[11px] font-bold border ${
+                  submitFeedback.ok
+                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                    : 'bg-rose-500/15 border-rose-500/40 text-rose-300'
+                }`}
+              >
+                {submitFeedback.text}
+              </div>
+            )}
+
+            {myPayments.length > 0 && (
+              <div className="space-y-1.5 pt-1">
+                <div className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1">
+                  <Clock className="w-3 h-3" />
+                  <span>Ubwishyu bwawe ({myPayments.length})</span>
+                </div>
+                {myPayments.slice(0, 3).map(p => (
+                  <div key={p.id} className="p-2 rounded-lg bg-[#050B1A] border border-slate-800 flex items-center justify-between text-[10px]">
+                    <span className="font-mono text-slate-300 truncate">{p.momoTxId} · {p.planTitle}</span>
+                    <span className={`font-black shrink-0 ml-2 ${
+                      p.status === 'VERIFIED' ? 'text-emerald-400' : p.status === 'REJECTED' ? 'text-rose-400' : 'text-amber-400'
+                    }`}>
+                      {p.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </form>
+
           {/* Large Green WhatsApp CTA Button */}
           <a
             href={whatsappUrl}
@@ -342,7 +458,7 @@ export const VipPaymentModal: React.FC<VipPaymentModalProps> = ({ isOpen, onClos
 
           <div className="flex items-center justify-center gap-1.5 text-[10px] text-slate-400 pt-1">
             <ShieldCheck className="w-3.5 h-3.5 text-[#06B6D4]" />
-            <span>Mutiganda Yvan VPN · Unlimited Internet · All Country · All SIM Card</span>
+            <span>Mutiganda Yvan VPN · Backend Payment Verification</span>
           </div>
         </div>
       </div>

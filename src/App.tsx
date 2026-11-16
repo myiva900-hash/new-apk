@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   ConnectionMode,
   ConnectionStatus,
@@ -7,12 +7,14 @@ import {
   VpnLogEntry,
   VpnServer,
   ExportableConfig,
-  SimCarrierMode
+  SimCarrierMode,
+  VipAccountStatus,
+  WireGuardProfile,
 } from './types/vpn';
-import { SERVERS } from './data/servers';
-import { vpnSimulator, VpnStats } from './services/vpnSimulator';
+import { DEFAULT_LOCAL_MANUAL_PROFILE, SIM_CARRIERS } from './data/servers';
+import { vpnBridge, LiveTunnelStats } from './services/vpnBridge';
+import { backendApi } from './services/api';
 import { soundService } from './services/sound';
-import { DEFAULT_PAYLOAD } from './services/payloadEngine';
 
 // UI Components
 import { MatrixHackingBackground } from './components/MatrixHackingBackground';
@@ -36,30 +38,66 @@ import { ApkDownloadModal } from './components/ApkDownloadModal';
 import { OnlineUpdateModal } from './components/OnlineUpdateModal';
 import { VipPaymentModal } from './components/VipPaymentModal';
 
+const WG_PROFILE_STORAGE_KEY = 'myv_wg_profile_v6';
+
+function loadSavedWireGuardProfile(): WireGuardProfile {
+  try {
+    const raw = localStorage.getItem(WG_PROFILE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        privateKey: parsed.privateKey || '',
+        publicKey: parsed.publicKey || '',
+        address: parsed.address || '10.0.0.2/32',
+        dns: parsed.dns || '1.1.1.1, 8.8.8.8',
+        mtu: Number(parsed.mtu) || 1420,
+        peerPublicKey: parsed.peerPublicKey || '',
+        presharedKey: parsed.presharedKey || '',
+        endpointHost: parsed.endpointHost || '',
+        endpointPort: Number(parsed.endpointPort) || 51820,
+        allowedIps: parsed.allowedIps || '0.0.0.0/0, ::/0',
+        persistentKeepalive: Number(parsed.persistentKeepalive) || 25,
+        importedConfigName: parsed.importedConfigName || undefined,
+      };
+    }
+  } catch {
+    // Fallback below
+  }
+  return {
+    privateKey: '',
+    publicKey: '',
+    address: '10.0.0.2/32',
+    dns: '1.1.1.1, 8.8.8.8',
+    mtu: 1420,
+    peerPublicKey: '',
+    presharedKey: '',
+    endpointHost: '',
+    endpointPort: 51820,
+    allowedIps: '0.0.0.0/0, ::/0',
+    persistentKeepalive: 25,
+  };
+}
+
 export default function App() {
   const [currentView, setCurrentView] = useState<'main' | 'settings'>('main');
   const [activeTab, setActiveTab] = useState<'HOME' | 'VIP_ROOM' | 'LOG'>('HOME');
 
-  const [status, setStatus] = useState<ConnectionStatus>('disconnected');
-  const [stats, setStats] = useState<VpnStats>(() => vpnSimulator.getStats());
+  const [status, setStatus] = useState<ConnectionStatus>(() => vpnBridge.getStatus());
+  const [stats, setStats] = useState<LiveTunnelStats>(() => vpnBridge.getStats());
   const [logs, setLogs] = useState<VpnLogEntry[]>([]);
-  const [selectedServer, setSelectedServer] = useState<VpnServer>(SERVERS[0]);
-  const [selectedPort, setSelectedPort] = useState<number>(80);
-  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('direct');
-  const [simCarrier, setSimCarrier] = useState<SimCarrierMode>('all_sim');
-  const [customSetupEnabled, setCustomSetupEnabled] = useState<boolean>(false);
 
-  const [customSetup, setCustomSetup] = useState<CustomSetupConfig>({
-    payload: DEFAULT_PAYLOAD,
-    hostHeader: 'cloudflare.com',
-    sni: 'edge.cloudflare.com',
-    proxyHost: '104.21.58.120',
-    proxyPort: '8080',
-    dnsttDomain: 't.myv-dns.org',
-    dnsttPublicKey: '3b6c28f090b4d4554be7df75bf1efbe00e572886f4a7c062abff4820a4be3568',
-    dnsResolver: '1.1.1.1',
+  const [servers, setServers] = useState<VpnServer[]>([]);
+  const [selectedServer, setSelectedServer] = useState<VpnServer>(DEFAULT_LOCAL_MANUAL_PROFILE);
+  const [selectedPort, setSelectedPort] = useState<number>(51820);
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('wireguard_manual');
+  const [simCarrier, setSimCarrier] = useState<SimCarrierMode>('all_sim');
+  const [customSetupEnabled, setCustomSetupEnabled] = useState<boolean>(true);
+  const [vipStatus, setVipStatus] = useState<VipAccountStatus | null>(null);
+
+  const [customSetup, setCustomSetup] = useState<CustomSetupConfig>(() => ({
+    wireguard: loadSavedWireGuardProfile(),
     importedConfigName: undefined,
-  });
+  }));
 
   // Luxury dark mode (#050B1A) as default with Light/Dark/System + 5 accent themes
   const [settings, setSettings] = useState<AppSettings>(() => {
@@ -116,66 +154,192 @@ export default function App() {
     localStorage.setItem('myv_settings_v6', JSON.stringify(settings));
   }, [settings]);
 
-  // Subscribe to VPN service
+  // Persist WireGuard local keys/profile safely
   useEffect(() => {
-    const unsubStatus = vpnSimulator.subscribeStatus((newStatus, newStats) => {
+    try {
+      localStorage.setItem(WG_PROFILE_STORAGE_KEY, JSON.stringify(customSetup.wireguard));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [customSetup.wireguard]);
+
+  const refreshBackend = useCallback(async () => {
+    try {
+      const [vip, serverList] = await Promise.all([
+        backendApi.getVipStatus(),
+        backendApi.getServers(),
+      ]);
+      setVipStatus(vip);
+      setServers(serverList);
+
+      if (serverList.length > 0) {
+        setSelectedServer(prev => {
+          const match = serverList.find(s => s.id === prev.id);
+          return match || serverList[0];
+        });
+        setConnectionMode(prev => (prev === 'imported_config' ? prev : 'wireguard_server'));
+      }
+    } catch (err) {
+      vpnBridge.emitLog(
+        'warn',
+        `[Backend Sync] ${err instanceof Error ? err.message : 'Unable to reach backend server.'}`
+      );
+    }
+  }, []);
+
+  // Subscribe to real WireGuard Bridge & sync backend on boot
+  useEffect(() => {
+    const unsubStatus = vpnBridge.subscribeStatus((newStatus, newStats) => {
       setStatus(newStatus);
       setStats(newStats);
     });
 
-    const unsubLogs = vpnSimulator.subscribeLogs(entry => {
+    const unsubLogs = vpnBridge.subscribeLogs(entry => {
       setLogs(prev => [...prev, entry]);
     });
 
-    vpnSimulator.emitLog(
+    vpnBridge.emitLog(
       'info',
-      'Mutiganda Yvan VPN v6 ready (124h timer · All SIM Cards · No-VPS Edge).'
+      `Mutiganda Yvan VPN v6 initialized (${vpnBridge.isNativeAndroid() ? 'Android WireGuard GoBackend Active' : 'Browser Config & Backend Mode'}).`
     );
+
+    refreshBackend();
+
+    const syncInterval = setInterval(() => {
+      backendApi.getVipStatus().then(setVipStatus).catch(() => {});
+    }, 60000);
 
     return () => {
       unsubStatus();
       unsubLogs();
+      clearInterval(syncInterval);
     };
+  }, [refreshBackend]);
+
+  // Live 1s countdown UI tick based on backend-verified remainingSeconds
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setVipStatus(prev => {
+        if (!prev || prev.remainingSeconds <= 0) return prev;
+        const nextRemaining = Math.max(0, prev.remainingSeconds - 1);
+        return {
+          ...prev,
+          remainingSeconds: nextRemaining,
+          isVipActive: nextRemaining > 0,
+        };
+      });
+    }, 1000);
+    return () => clearInterval(timer);
   }, []);
 
+  const handleUpdateWireGuard = (updates: Partial<WireGuardProfile>) => {
+    setCustomSetup(prev => ({
+      ...prev,
+      wireguard: {
+        ...prev.wireguard,
+        ...updates,
+      },
+    }));
+  };
+
+  const handleGenerateKeyPair = async () => {
+    const pair = await vpnBridge.generateKeyPairAsync();
+    if (!pair) {
+      vpnBridge.emitLog(
+        'warn',
+        '[WireGuard KeyGen] Browser yawe ntiyemera WebCrypto X25519 cyangwa ntiwafunguye muri Android APK. Injiza PrivateKey mu ntoki cyangwa ukore import ya .conf.'
+      );
+      return;
+    }
+
+    handleUpdateWireGuard({
+      privateKey: pair.privateKey,
+      publicKey: pair.publicKey,
+    });
+    vpnBridge.emitLog(
+      'success',
+      `[WireGuard KeyPair Generated] Client PublicKey: ${pair.publicKey} (shyira iyi PublicKey kuri WireGuard server peer yawe)`
+    );
+  };
+
   const handleStartVpn = () => {
-    vpnSimulator.startConnection(selectedServer, selectedPort, connectionMode, customSetup, {
+    const wg = customSetup.wireguard;
+
+    if (connectionMode === 'wireguard_server' && selectedServer.requiresVip && !vipStatus?.isVipActive) {
+      vpnBridge.emitLog(
+        'warn',
+        '[VIP Required] Server wahisemo isaba VIP yemejwe na Backend. Ishyura MoMo cyangwa ukoreshe Redeem Code muri VIP ROOM.'
+      );
+      setVipPaymentOpen(true);
+      soundService.playVipWelcomeGuide();
+      return;
+    }
+
+    const activeProfile: WireGuardProfile =
+      connectionMode === 'wireguard_server' && selectedServer.endpointHost
+        ? {
+            ...wg,
+            endpointHost: selectedServer.endpointHost,
+            endpointPort: selectedPort || selectedServer.endpointPort || 51820,
+            peerPublicKey: selectedServer.serverPublicKey,
+            dns: settings.customDns
+              ? `${settings.primaryDns}${settings.secondaryDns ? `, ${settings.secondaryDns}` : ''}`
+              : selectedServer.dnsServers || wg.dns,
+            allowedIps: selectedServer.allowedIps || wg.allowedIps,
+            mtu: selectedServer.mtu || wg.mtu || 1420,
+          }
+        : {
+            ...wg,
+            endpointPort: wg.endpointPort || selectedPort || 51820,
+            dns: settings.customDns
+              ? `${settings.primaryDns}${settings.secondaryDns ? `, ${settings.secondaryDns}` : ''}`
+              : wg.dns,
+          };
+
+    const simLabel = SIM_CARRIERS.find(c => c.id === simCarrier)?.short || 'ALL SIM';
+    const label =
+      connectionMode === 'wireguard_server' && selectedServer.endpointHost
+        ? selectedServer.name
+        : customSetup.importedConfigName || activeProfile.endpointHost || 'Custom WireGuard Peer';
+
+    vpnBridge.startWireGuard(activeProfile, label, {
       sound: settings.sound,
       vibrate: settings.vibrate,
-      primaryDns: settings.primaryDns,
-      forwardDns: settings.forwardDns,
-      simCarrier,
+      simCarrierLabel: simLabel,
     });
   };
 
   const handleStopVpn = () => {
-    vpnSimulator.stopConnection({
+    vpnBridge.stopWireGuard({
       sound: settings.sound,
       vibrate: settings.vibrate,
     });
   };
 
   const handleConfigImported = (config: ExportableConfig) => {
-    setConnectionMode(config.connectionMode);
-    setCustomSetup(config.customSetup);
+    setConnectionMode('imported_config');
+    setCustomSetup({
+      wireguard: {
+        ...config.customSetup.wireguard,
+        importedConfigName: config.configName,
+      },
+      importedConfigName: config.configName,
+      importedConfigRaw: config.customSetup.importedConfigRaw,
+    });
     setCustomSetupEnabled(true);
 
-    const matchingServer = SERVERS.find(s => s.host === config.serverHost);
-    if (matchingServer) {
-      setSelectedServer(matchingServer);
-    }
     if (config.serverPort) {
       setSelectedPort(config.serverPort);
     }
 
-    setCustomSetup(prev => ({
-      ...prev,
-      importedConfigName: config.configName,
-    }));
+    const matchingServer = servers.find(s => s.endpointHost === config.serverHost);
+    if (matchingServer) {
+      setSelectedServer(matchingServer);
+    }
 
-    vpnSimulator.emitLog(
+    vpnBridge.emitLog(
       'success',
-      `Imported configuration profile [${config.configName}] successfully applied.`
+      `[WireGuard Import] Profile [${config.configName}] (${config.serverHost}:${config.serverPort}) yinjijwe neza.`
     );
   };
 
@@ -246,7 +410,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-transparent text-slate-900 dark:text-slate-100 flex justify-center font-sans transition-colors relative overflow-hidden">
-      
+
       {/* LIVE ANIMATED MATRIX HACKING + CONSTELLATION BACKGROUND */}
       <MatrixHackingBackground accentColor={settings.accentColor} />
 
@@ -291,6 +455,8 @@ export default function App() {
                 <HomeScreen
                   status={status}
                   stats={stats}
+                  vipStatus={vipStatus}
+                  servers={servers}
                   selectedServer={selectedServer}
                   onSelectServer={setSelectedServer}
                   selectedPort={selectedPort}
@@ -302,26 +468,28 @@ export default function App() {
                   customSetupEnabled={customSetupEnabled}
                   onToggleCustomSetup={setCustomSetupEnabled}
                   customSetup={customSetup}
-                  onUpdateCustomSetup={updates => setCustomSetup(prev => ({ ...prev, ...updates }))}
+                  onUpdateWireGuard={handleUpdateWireGuard}
+                  onGenerateKeyPair={handleGenerateKeyPair}
                   onStartVpn={handleStartVpn}
                   onStopVpn={handleStopVpn}
-                  onOpenPayloadGen={() => setPayloadGenOpen(true)}
                   onOpenImportConfig={() => setImportConfigOpen(true)}
                   onOpenExportConfig={() => setExportConfigOpen(true)}
                   onOpenServerApps={() => setServerAppsOpen(true)}
                   onOpenUpdate={() => setOnlineUpdateOpen(true)}
                   onOpenVipPayment={handleOpenVipPayment}
                   onOpenVipRoom={handleOpenVipRoom}
+                  onRefreshBackend={refreshBackend}
                   accentColor={settings.accentColor}
-                  onSelectAccentColor={color => setSettings(prev => ({ ...prev, accentColor: color }))}
                 />
               ) : activeTab === 'VIP_ROOM' ? (
                 <VipRoomScreen
-                  remainingSeconds={stats.remainingSeconds}
+                  vipStatus={vipStatus}
+                  servers={servers}
                   selectedServer={selectedServer}
                   onSelectServer={setSelectedServer}
                   onOpenVipPayment={handleOpenVipPayment}
                   onSwitchToHome={() => setActiveTab('HOME')}
+                  onRefreshBackend={refreshBackend}
                 />
               ) : (
                 <LogScreen logs={logs} onClearLogs={handleClearLogs} />
@@ -343,10 +511,7 @@ export default function App() {
         isOpen={payloadGenOpen}
         onClose={() => setPayloadGenOpen(false)}
         onApplyPayload={p => {
-          setCustomSetup(prev => ({ ...prev, payload: p }));
-          setCustomSetupEnabled(true);
-          setConnectionMode('custom_payload');
-          vpnSimulator.emitLog('info', 'Custom payload updated and applied to setup.');
+          vpnBridge.emitLog('info', `[Payload Reference Copied] ${p.replace(/\r\n/g, ' ')}`);
         }}
       />
 
@@ -373,13 +538,15 @@ export default function App() {
       <ServerAppsModal
         isOpen={serverAppsOpen}
         onClose={() => setServerAppsOpen(false)}
+        servers={servers}
       />
 
       <OnlineUpdateModal
         isOpen={onlineUpdateOpen}
         onClose={() => setOnlineUpdateOpen(false)}
         onApplyUpdate={ver => {
-          vpnSimulator.emitLog('vip_shield', `[UPDATE] Mutiganda Yvan VPN updated to ${ver}`);
+          vpnBridge.emitLog('vip_shield', `[BACKEND SYNC] Verified Mutiganda Yvan VPN ${ver}`);
+          refreshBackend();
         }}
       />
 
@@ -395,7 +562,11 @@ export default function App() {
 
       <VipPaymentModal
         isOpen={vipPaymentOpen}
-        onClose={() => setVipPaymentOpen(false)}
+        onClose={() => {
+          setVipPaymentOpen(false);
+          refreshBackend();
+        }}
+        onPaymentUpdated={refreshBackend}
       />
     </div>
   );

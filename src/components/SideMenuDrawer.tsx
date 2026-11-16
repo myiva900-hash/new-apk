@@ -195,7 +195,7 @@ export const SideMenuDrawer: React.FC<SideMenuDrawerProps> = ({
                 className="w-full flex items-center gap-4 px-5 py-3 text-left text-xs sm:text-sm font-semibold text-slate-800 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 <LayoutGrid className="w-5 h-5 text-blue-500" />
-                <span>No-VPS Servers Ping</span>
+                <span>WireGuard Endpoint Probe</span>
               </button>
             </div>
 

@@ -67,14 +67,14 @@ export const AboutModal: React.FC<AboutModalProps> = ({ isOpen, onClose }) => {
             </div>
           </div>
 
-          {/* Rwanda Dedicated Nodes Notice */}
+          {/* WireGuard & Backend Notice */}
           <div className="p-3 bg-blue-50/70 dark:bg-blue-950/30 rounded-xl border border-blue-200/80 dark:border-blue-900/40 space-y-1.5">
             <div className="flex items-center gap-2 font-bold text-blue-900 dark:text-blue-300 text-xs">
-              <span>🇷🇼</span>
-              <span>Rwanda Dedicated High-Speed Nodes</span>
+              <span>🔐</span>
+              <span>Real WireGuard Tunnel &amp; Backend Verified VIP</span>
             </div>
             <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
-              Equipped with 3 dedicated low-latency gateway servers located in <strong>Gisozi (Kigali)</strong>, <strong>Rwamagana</strong>, and <strong>Kayonza</strong> for optimized local and cross-border routing.
+              Uses official WireGuard (<code className="font-mono">com.wireguard.android:tunnel</code>) over Android <code className="font-mono">VpnService</code>. Connects to verified WireGuard server endpoints registered on the backend or imported via <code className="font-mono">.conf</code>.
             </p>
           </div>
 
