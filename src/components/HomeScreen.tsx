@@ -35,6 +35,7 @@ import {
 import { LiveTunnelStats, vpnBridge, isValidWireGuardKey } from '../services/vpnBridge';
 import { WIREGUARD_PORTS, SIM_CARRIERS } from '../data/servers';
 import { MyvLogo } from './MyvLogo';
+import { ThroughputChart } from './ThroughputChart';
 
 interface HomeScreenProps {
   status: ConnectionStatus;
@@ -451,6 +452,9 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
             <span>RX: {vpnBridge.formatBytes(stats.rxBytes)}</span>
           </div>
         </div>
+
+        {/* Real-time D3.js Upload & Download Throughput Line Chart */}
+        <ThroughputChart status={status} stats={stats} />
 
         {/* WireGuard Mode + 3-Dot Import/Export + Peer Setup Switch */}
         <div className="pt-1">
