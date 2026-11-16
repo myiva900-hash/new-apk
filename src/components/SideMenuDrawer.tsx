@@ -11,7 +11,8 @@ import {
   MessageCircle,
   RefreshCw,
   Crown,
-  Gift
+  Gift,
+  Plus
 } from 'lucide-react';
 
 interface SideMenuDrawerProps {
@@ -30,6 +31,7 @@ interface SideMenuDrawerProps {
       | 'apk_download'
       | 'vip_payment'
       | 'vip_room'
+      | 'add_server'
   ) => void;
 }
 
@@ -124,6 +126,20 @@ export const SideMenuDrawer: React.FC<SideMenuDrawerProps> = ({
                   <span>Kuramo APK ya Phone</span>
                 </div>
                 <span className="text-[10px] font-black">APK</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  onClose();
+                  onSelectOption('add_server');
+                }}
+                className="w-full flex items-center justify-between px-3.5 py-2 rounded-xl text-left text-xs sm:text-sm font-bold bg-cyan-50 dark:bg-cyan-950/40 text-cyan-700 dark:text-cyan-300 border border-cyan-200 dark:border-cyan-500/40 hover:bg-cyan-100/60 transition-all cursor-pointer"
+              >
+                <div className="flex items-center gap-2">
+                  <Plus className="w-4 h-4" />
+                  <span>Ongeramo Server</span>
+                </div>
+                <span className="text-[10px] font-black">+WG</span>
               </button>
             </div>
 

@@ -37,8 +37,22 @@ import { AboutModal } from './components/AboutModal';
 import { ApkDownloadModal } from './components/ApkDownloadModal';
 import { OnlineUpdateModal } from './components/OnlineUpdateModal';
 import { VipPaymentModal } from './components/VipPaymentModal';
+import { AddServerDrawer } from './components/AddServerDrawer';
+import { Server } from 'lucide-react';
 
 const WG_PROFILE_STORAGE_KEY = 'myv_wg_profile_v6';
+const LOCAL_SERVERS_STORAGE_KEY = 'myv_local_servers_v6';
+
+function loadSavedLocalServers(): VpnServer[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_SERVERS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 function loadSavedWireGuardProfile(): WireGuardProfile {
   try {
@@ -86,10 +100,23 @@ export default function App() {
   const [stats, setStats] = useState<LiveTunnelStats>(() => vpnBridge.getStats());
   const [logs, setLogs] = useState<VpnLogEntry[]>([]);
 
-  const [servers, setServers] = useState<VpnServer[]>([]);
-  const [selectedServer, setSelectedServer] = useState<VpnServer>(DEFAULT_LOCAL_MANUAL_PROFILE);
-  const [selectedPort, setSelectedPort] = useState<number>(51820);
-  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('wireguard_manual');
+  const [backendServers, setBackendServers] = useState<VpnServer[]>([]);
+  const [localServers, setLocalServers] = useState<VpnServer[]>(() => loadSavedLocalServers());
+  const servers = React.useMemo(() => {
+    const map = new Map<string, VpnServer>();
+    [...localServers, ...backendServers].forEach(s => map.set(s.id, s));
+    return Array.from(map.values());
+  }, [localServers, backendServers]);
+
+  const [selectedServer, setSelectedServer] = useState<VpnServer>(
+    () => loadSavedLocalServers()[0] || DEFAULT_LOCAL_MANUAL_PROFILE
+  );
+  const [selectedPort, setSelectedPort] = useState<number>(
+    () => loadSavedLocalServers()[0]?.endpointPort || 51820
+  );
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>(() =>
+    loadSavedLocalServers().length > 0 ? 'wireguard_server' : 'wireguard_manual'
+  );
   const [simCarrier, setSimCarrier] = useState<SimCarrierMode>('all_sim');
   const [customSetupEnabled, setCustomSetupEnabled] = useState<boolean>(true);
   const [vipStatus, setVipStatus] = useState<VipAccountStatus | null>(null);
@@ -138,6 +165,7 @@ export default function App() {
   const [apkDownloadOpen, setApkDownloadOpen] = useState(false);
   const [onlineUpdateOpen, setOnlineUpdateOpen] = useState(false);
   const [vipPaymentOpen, setVipPaymentOpen] = useState(false);
+  const [addServerOpen, setAddServerOpen] = useState(false);
 
   // Sync theme
   useEffect(() => {
@@ -163,6 +191,14 @@ export default function App() {
     }
   }, [customSetup.wireguard]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOCAL_SERVERS_STORAGE_KEY, JSON.stringify(localServers));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [localServers]);
+
   const refreshBackend = useCallback(async () => {
     try {
       const [vip, serverList] = await Promise.all([
@@ -170,10 +206,11 @@ export default function App() {
         backendApi.getServers(),
       ]);
       setVipStatus(vip);
-      setServers(serverList);
+      setBackendServers(serverList);
 
       if (serverList.length > 0) {
         setSelectedServer(prev => {
+          if (prev.id.startsWith('custom-') && prev.endpointHost) return prev;
           const match = serverList.find(s => s.id === prev.id);
           return match || serverList[0];
         });
@@ -233,6 +270,7 @@ export default function App() {
   }, []);
 
   const handleUpdateWireGuard = (updates: Partial<WireGuardProfile>) => {
+    vpnBridge.clearNotice();
     setCustomSetup(prev => ({
       ...prev,
       wireguard: {
@@ -256,6 +294,7 @@ export default function App() {
       privateKey: pair.privateKey,
       publicKey: pair.publicKey,
     });
+    vpnBridge.clearNotice();
     vpnBridge.emitLog(
       'success',
       `[WireGuard KeyPair Generated] Client PublicKey: ${pair.publicKey} (shyira iyi PublicKey kuri WireGuard server peer yawe)`
@@ -266,10 +305,15 @@ export default function App() {
     const wg = customSetup.wireguard;
 
     if (connectionMode === 'wireguard_server' && selectedServer.requiresVip && !vipStatus?.isVipActive) {
-      vpnBridge.emitLog(
-        'warn',
-        '[VIP Required] Server wahisemo isaba VIP yemejwe na Backend. Ishyura MoMo cyangwa ukoreshe Redeem Code muri VIP ROOM.'
-      );
+      const msg =
+        'Server wahisemo isaba VIP yemejwe na Backend. Ishyura MoMo cyangwa ukoreshe Redeem Code muri VIP ROOM.';
+      vpnBridge.emitLog('warn', `[VIP Required] ${msg}`);
+      vpnBridge.setNotice({
+        level: 'warn',
+        title: 'VIP irakenewe kuri iyi server',
+        message: msg,
+        action: 'vip_payment',
+      });
       setVipPaymentOpen(true);
       soundService.playVipWelcomeGuide();
       return;
@@ -295,6 +339,10 @@ export default function App() {
               ? `${settings.primaryDns}${settings.secondaryDns ? `, ${settings.secondaryDns}` : ''}`
               : wg.dns,
           };
+
+    if (!activeProfile.endpointHost.trim() || !activeProfile.peerPublicKey.trim() || !activeProfile.privateKey.trim()) {
+      setCustomSetupEnabled(true);
+    }
 
     const simLabel = SIM_CARRIERS.find(c => c.id === simCarrier)?.short || 'ALL SIM';
     const label =
@@ -337,6 +385,7 @@ export default function App() {
       setSelectedServer(matchingServer);
     }
 
+    vpnBridge.clearNotice();
     vpnBridge.emitLog(
       'success',
       `[WireGuard Import] Profile [${config.configName}] (${config.serverHost}:${config.serverPort}) yinjijwe neza.`
@@ -370,6 +419,7 @@ export default function App() {
       | 'apk_download'
       | 'vip_payment'
       | 'vip_room'
+      | 'add_server'
   ) => {
     switch (option) {
       case 'payload_gen':
@@ -405,7 +455,45 @@ export default function App() {
       case 'vip_room':
         handleOpenVipRoom();
         break;
+      case 'add_server':
+        setAddServerOpen(true);
+        break;
     }
+  };
+
+  const handleSaveLocalServer = (
+    server: VpnServer,
+    clientPrivateKey?: string,
+    address?: string
+  ) => {
+    setLocalServers(prev => [server, ...prev.filter(s => s.id !== server.id)]);
+    setSelectedServer(server);
+    setSelectedPort(server.endpointPort);
+    setConnectionMode('wireguard_server');
+    if (clientPrivateKey || address) {
+      handleUpdateWireGuard({
+        ...(clientPrivateKey ? { privateKey: clientPrivateKey } : {}),
+        ...(address ? { address } : {}),
+        endpointHost: server.endpointHost,
+        endpointPort: server.endpointPort,
+        peerPublicKey: server.serverPublicKey,
+      });
+    }
+    vpnBridge.clearNotice();
+    vpnBridge.emitLog(
+      'success',
+      `[Server Added] ${server.name} (${server.endpointHost}:${server.endpointPort}) yashyizweho kandi irahiswemo.`
+    );
+  };
+
+  const handleDeleteLocalServer = (id: string) => {
+    setLocalServers(prev => {
+      const remaining = prev.filter(s => s.id !== id);
+      if (selectedServer.id === id) {
+        setSelectedServer(remaining[0] || backendServers[0] || DEFAULT_LOCAL_MANUAL_PROFILE);
+      }
+      return remaining;
+    });
   };
 
   return (
@@ -478,6 +566,8 @@ export default function App() {
                   onOpenUpdate={() => setOnlineUpdateOpen(true)}
                   onOpenVipPayment={handleOpenVipPayment}
                   onOpenVipRoom={handleOpenVipRoom}
+                  onOpenAddServer={() => setAddServerOpen(true)}
+                  onOpenApkDownload={() => setApkDownloadOpen(true)}
                   onRefreshBackend={refreshBackend}
                   accentColor={settings.accentColor}
                 />
@@ -496,6 +586,20 @@ export default function App() {
               )}
             </div>
           </>
+        )}
+
+        {/* Quick Side Server Edge Tab (kuruhande) */}
+        {currentView === 'main' && (
+          <button
+            type="button"
+            onClick={() => setAddServerOpen(true)}
+            className="fixed right-0 top-1/2 -translate-y-1/2 z-30 bg-[#050B1A]/90 hover:bg-[#1D4ED8] text-[#06B6D4] hover:text-white border border-r-0 border-cyan-500/45 rounded-l-xl px-1.5 py-3 shadow-lg flex flex-col items-center gap-1 text-[10px] font-black tracking-wider cursor-pointer transition-colors"
+            title="Ongeramo Server ku ruhande"
+            aria-label="Ongeramo Server ku ruhande"
+          >
+            <Server className="w-3.5 h-3.5" />
+            <span className="[writing-mode:vertical-rl] rotate-180 uppercase">+ SERVER</span>
+          </button>
         )}
       </div>
 
@@ -567,6 +671,21 @@ export default function App() {
           refreshBackend();
         }}
         onPaymentUpdated={refreshBackend}
+      />
+
+      <AddServerDrawer
+        isOpen={addServerOpen}
+        onClose={() => setAddServerOpen(false)}
+        localServers={localServers}
+        selectedServerId={selectedServer.id}
+        onSaveLocalServer={handleSaveLocalServer}
+        onSelectServer={srv => {
+          setSelectedServer(srv);
+          setSelectedPort(srv.endpointPort);
+          setConnectionMode('wireguard_server');
+        }}
+        onDeleteLocalServer={handleDeleteLocalServer}
+        onBackendServerAdded={refreshBackend}
       />
     </div>
   );

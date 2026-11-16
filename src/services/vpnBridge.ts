@@ -5,6 +5,14 @@ import {
 } from '../types/vpn';
 import { soundService } from './sound';
 import { triggerHaptic } from './haptics';
+import { backendApi } from './api';
+
+export interface BridgeNotice {
+  level: 'error' | 'warn' | 'info' | 'success';
+  title: string;
+  message: string;
+  action?: 'add_server' | 'import_conf' | 'gen_keys' | 'download_apk' | 'vip_payment';
+}
 
 export interface LiveTunnelStats {
   rxBytes: number;
@@ -15,6 +23,7 @@ export interface LiveTunnelStats {
   latestHandshakeEpochMs: number;
   tunnelName: string;
   nativeAndroidActive: boolean;
+  lastNotice: BridgeNotice | null;
 }
 
 export type LogListener = (entry: VpnLogEntry) => void;
@@ -28,6 +37,9 @@ interface AndroidVpnInterface {
   getStatusJson?: () => string;
   generateWireGuardKeyPair?: () => string;
   openWhatsApp?: (phoneNumber: string) => void;
+  isOfflineTtsAvailable?: () => boolean;
+  speakOffline?: (stepsJsonOrText: string) => void;
+  stopSpeakOffline?: () => void;
 }
 
 declare global {
@@ -173,6 +185,7 @@ class RealWireGuardBridgeService {
     latestHandshakeEpochMs: 0,
     tunnelName: 'myv_wg0',
     nativeAndroidActive: this.isNativeAndroid(),
+    lastNotice: null,
   };
 
   private logListeners = new Set<LogListener>();
@@ -232,6 +245,10 @@ class RealWireGuardBridgeService {
         tunnelName: (payload.tunnelName as string) || this.stats.tunnelName,
         connectedSeconds: Number(payload.connectedSeconds) || 0,
         nativeAndroidActive: true,
+        lastNotice:
+          nextStatus === 'connected'
+            ? null
+            : this.stats.lastNotice,
       };
 
       if (nextStatus === 'connected' && prevStatus !== 'connected') {
@@ -261,6 +278,13 @@ class RealWireGuardBridgeService {
       if (msg) {
         this.emitLog(level, msg);
       }
+    } else if (eventType === 'tts_step') {
+      const step = Number(payload.step);
+      if (!Number.isNaN(step)) {
+        soundService.handleNativeTtsStep(step);
+      }
+    } else if (eventType === 'tts_done') {
+      soundService.handleNativeTtsStep(null);
     }
   }
 
@@ -287,6 +311,18 @@ class RealWireGuardBridgeService {
       message,
     };
     this.logListeners.forEach(listener => listener(entry));
+  }
+
+  public clearNotice() {
+    if (this.stats.lastNotice) {
+      this.stats = { ...this.stats, lastNotice: null };
+      this.notifyStatus();
+    }
+  }
+
+  public setNotice(notice: BridgeNotice | null) {
+    this.stats = { ...this.stats, lastNotice: notice };
+    this.notifyStatus();
   }
 
   public getStatus(): ConnectionStatus {
@@ -352,47 +388,108 @@ class RealWireGuardBridgeService {
     return null;
   }
 
-  public startWireGuard(
+  public async startWireGuard(
     profile: WireGuardProfile,
     serverLabel: string,
     opts: { sound: boolean; vibrate: boolean; simCarrierLabel?: string }
   ) {
     this.soundEnabled = opts.sound;
     this.vibrateEnabled = opts.vibrate;
+    this.stats = { ...this.stats, lastNotice: null };
+
+    if (!profile.endpointHost.trim() || isBlockedDocIp(profile.endpointHost)) {
+      const msg =
+        'Shyiramo Endpoint Host/IP nyayo ya WireGuard server (cyangwa ukande "+ Server" / "Import .CONF") mbere yo guhuza.';
+      this.emitLog('error', `[WireGuard] ${msg}`);
+      this.setNotice({
+        level: 'error',
+        title: 'Nta Server Endpoint irimo',
+        message: msg,
+        action: 'add_server',
+      });
+      return;
+    }
+
+    if (!isValidWireGuardKey(profile.peerPublicKey)) {
+      const msg =
+        'Injiza Server PublicKey nyayo ya WireGuard (inyuguti 44 za Base64) cyangwa ukore Import ya .conf.';
+      this.emitLog('error', `[WireGuard] ${msg}`);
+      this.setNotice({
+        level: 'error',
+        title: 'Server PublicKey irakenewe',
+        message: msg,
+        action: 'add_server',
+      });
+      return;
+    }
 
     if (!isValidWireGuardKey(profile.privateKey)) {
-      this.emitLog(
-        'error',
-        '[WireGuard] Injiza PrivateKey nyayo ya WireGuard (Base64) cyangwa ukore import ya .conf mbere yo guhuza.'
-      );
-      return;
-    }
-    if (!isValidWireGuardKey(profile.peerPublicKey)) {
-      this.emitLog(
-        'error',
-        '[WireGuard] Injiza Server PublicKey nyayo ya WireGuard mbere yo guhuza.'
-      );
-      return;
-    }
-    if (!profile.endpointHost.trim() || isBlockedDocIp(profile.endpointHost)) {
-      this.emitLog(
-        'error',
-        '[WireGuard] Endpoint ya server nyayo irakenewe (RFC 5737 test IPs ntizemewe).'
-      );
+      const msg =
+        'Injiza Client PrivateKey ya WireGuard cyangwa ukande "Generate KeyPair" hasi muri WG KEYS.';
+      this.emitLog('error', `[WireGuard] ${msg}`);
+      this.setNotice({
+        level: 'error',
+        title: 'Client PrivateKey irabura',
+        message: msg,
+        action: 'gen_keys',
+      });
       return;
     }
 
     const ini = buildWireGuardIni(profile);
 
     if (!this.isNativeAndroid() || !window.AndroidVpn?.startWireGuard) {
-      this.emitLog(
-        'warn',
-        '[Android VpnService] Uri muri Browser gusa. Tunnel nyayo ya WireGuard (GoBackend) ikora iyo app ifunguwe muri Android APK.'
-      );
+      // Browser environment: perform a real backend DNS/TCP endpoint probe so user sees immediate live verification
+      this.status = 'connecting';
+      this.notifyStatus();
       this.emitLog(
         'info',
-        `[WireGuard Config Validated] Target: ${profile.endpointHost}:${profile.endpointPort} | SIM Mode: ${opts.simCarrierLabel || 'ALL SIM'}`
+        `[WireGuard Probe] Validating ${serverLabel} (${profile.endpointHost}:${profile.endpointPort}) via backend...`
       );
+
+      try {
+        const probe = await backendApi.probeServer(
+          profile.endpointHost.trim(),
+          profile.endpointPort || 51820
+        );
+        this.status = 'disconnected';
+        if (probe.ok) {
+          this.emitLog(
+            'success',
+            `[Endpoint Verified] ${probe.host} -> ${probe.resolvedIp} (DNS ${probe.dnsMs}ms${probe.tcpReachable ? `, TCP ${probe.tcpMs}ms` : ''}). Tunnel nyayo ikenera Android APK.`
+          );
+          this.setNotice({
+            level: 'info',
+            title: `Server Endpoint Iremejwe (${probe.resolvedIp})`,
+            message:
+              'Config ya WireGuard iri tayari! Kuko uri muri Browser, fungura iyi app muri Android APK (app-debug.apk) kugira ngo Android VpnService ikoreshe tun0 nyayo.',
+            action: 'download_apk',
+          });
+        } else {
+          const errText = probe.error || probe.note || 'Endpoint ntabwo yabonetse kuri DNS.';
+          this.emitLog('warn', `[Endpoint Probe] ${errText}`);
+          this.setNotice({
+            level: 'warn',
+            title: 'Endpoint ntishoboye kuboneka',
+            message: `${errText}. Reba neza niba Endpoint (${profile.endpointHost}:${profile.endpointPort}) ari yo.`,
+            action: 'add_server',
+          });
+        }
+      } catch (err) {
+        this.status = 'disconnected';
+        const msg =
+          err instanceof Error
+            ? err.message
+            : 'Uri muri Browser. Fungura muri Android APK kugira ngo WireGuard ikore.';
+        this.emitLog('warn', `[Android VpnService] ${msg}`);
+        this.setNotice({
+          level: 'info',
+          title: 'Android APK irakenewe kuri Tunnel',
+          message:
+            'Config ya WireGuard imeze neza! Koresha Android APK (app-debug.apk) kugira ngo WireGuard GoBackend itangire kuri telefoni.',
+          action: 'download_apk',
+        });
+      }
       return;
     }
 

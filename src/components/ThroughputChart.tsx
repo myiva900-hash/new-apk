@@ -18,6 +18,16 @@ interface ThroughputChartProps {
 
 const MAX_SAMPLES = 30;
 
+// Persist rolling telemetry across tab switches (HOME <-> LOG <-> VIP_ROOM)
+let persistedSamples: ThroughputSample[] = [];
+let persistedSeq = 0;
+let lastTrackedStatus: ConnectionStatus = 'disconnected';
+let lastTotalsSnapshot: { rxBytes: number; txBytes: number; ts: number } = {
+  rxBytes: 0,
+  txBytes: 0,
+  ts: 0,
+};
+
 function formatSpeed(bytesPerSec: number): string {
   if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return '0 B/s';
   if (bytesPerSec < 1024) return `${Math.round(bytesPerSec)} B/s`;
@@ -29,17 +39,10 @@ export const ThroughputChart: React.FC<ThroughputChartProps> = ({ status, stats 
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
-  const [samples, setSamples] = useState<ThroughputSample[]>([]);
+  const [samples, setSamples] = useState<ThroughputSample[]>(() => persistedSamples);
   const [chartWidth, setChartWidth] = useState<number>(380);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 
-  const seqRef = useRef(0);
-  const prevStatusRef = useRef<ConnectionStatus>(status);
-  const lastTotalsRef = useRef<{ rxBytes: number; txBytes: number; ts: number }>({
-    rxBytes: stats.rxBytes,
-    txBytes: stats.txBytes,
-    ts: Date.now(),
-  });
   const latestStatsRef = useRef(stats);
   latestStatsRef.current = stats;
 
@@ -64,64 +67,98 @@ export const ThroughputChart: React.FC<ThroughputChartProps> = ({ status, stats 
     return () => window.removeEventListener('resize', updateWidth);
   }, []);
 
-  // Start fresh trace when entering a new active tunnel session
+  // Reset trace when transitioning into a brand-new active connection
   useEffect(() => {
-    const prev = prevStatusRef.current;
-    if (status === 'connected' && prev !== 'connected') {
-      seqRef.current = 0;
-      lastTotalsRef.current = {
+    if (status === 'connected' && lastTrackedStatus !== 'connected') {
+      const now = Date.now();
+      persistedSeq = 0;
+      lastTotalsSnapshot = {
         rxBytes: stats.rxBytes,
         txBytes: stats.txBytes,
-        ts: Date.now(),
+        ts: now,
       };
-      setSamples([
+      persistedSamples = [
         {
           seq: 0,
-          timestampMs: Date.now(),
+          timestampMs: now,
           rxSpeed: Math.max(0, stats.rxSpeed || 0),
           txSpeed: Math.max(0, stats.txSpeed || 0),
         },
-      ]);
+      ];
+      setSamples(persistedSamples);
       setHoverIndex(null);
     }
-    prevStatusRef.current = status;
+    lastTrackedStatus = status;
   }, [status, stats.rxBytes, stats.txBytes, stats.rxSpeed, stats.txSpeed]);
 
-  // Sample real throughput once per second while tunnel is connected
+  // Hook directly into live vpnBridge stats updates during active connections
   useEffect(() => {
     if (status !== 'connected') return;
 
-    const tick = () => {
-      const current = latestStatsRef.current;
+    const now = Date.now();
+    const elapsedSec =
+      lastTotalsSnapshot.ts > 0 ? Math.max(0.25, (now - lastTotalsSnapshot.ts) / 1000) : 1;
+
+    const deltaRx = Math.max(0, stats.rxBytes - lastTotalsSnapshot.rxBytes) / elapsedSec;
+    const deltaTx = Math.max(0, stats.txBytes - lastTotalsSnapshot.txBytes) / elapsedSec;
+
+    const rxSpeed = stats.rxSpeed > 0 ? stats.rxSpeed : deltaRx;
+    const txSpeed = stats.txSpeed > 0 ? stats.txSpeed : deltaTx;
+
+    const bytesChanged =
+      stats.rxBytes !== lastTotalsSnapshot.rxBytes || stats.txBytes !== lastTotalsSnapshot.txBytes;
+    const speedPresent = stats.rxSpeed > 0 || stats.txSpeed > 0;
+    const enoughTimeElapsed = now - lastTotalsSnapshot.ts >= 900;
+
+    if (bytesChanged || speedPresent || enoughTimeElapsed) {
+      lastTotalsSnapshot = {
+        rxBytes: stats.rxBytes,
+        txBytes: stats.txBytes,
+        ts: now,
+      };
+      persistedSeq += 1;
+      const point: ThroughputSample = {
+        seq: persistedSeq,
+        timestampMs: now,
+        rxSpeed: Math.max(0, rxSpeed),
+        txSpeed: Math.max(0, txSpeed),
+      };
+      persistedSamples = [...persistedSamples.slice(-(MAX_SAMPLES - 1)), point];
+      setSamples(persistedSamples);
+    }
+  }, [status, stats.rxBytes, stats.txBytes, stats.rxSpeed, stats.txSpeed, stats.connectedSeconds]);
+
+  // Keep timeline advancing at 1 Hz during quiet intervals when connected
+  useEffect(() => {
+    if (status !== 'connected') return;
+
+    const interval = setInterval(() => {
       const now = Date.now();
-      const prevTotals = lastTotalsRef.current;
-      const elapsedSec = Math.max(0.25, (now - prevTotals.ts) / 1000);
+      if (now - lastTotalsSnapshot.ts < 1200) return;
 
-      // Prefer GoBackend per-second speed; fallback to cumulative byte delta
-      const deltaRx = Math.max(0, current.rxBytes - prevTotals.rxBytes) / elapsedSec;
-      const deltaTx = Math.max(0, current.txBytes - prevTotals.txBytes) / elapsedSec;
+      const current = latestStatsRef.current;
+      const elapsedSec =
+        lastTotalsSnapshot.ts > 0 ? Math.max(0.25, (now - lastTotalsSnapshot.ts) / 1000) : 1;
+      const deltaRx = Math.max(0, current.rxBytes - lastTotalsSnapshot.rxBytes) / elapsedSec;
+      const deltaTx = Math.max(0, current.txBytes - lastTotalsSnapshot.txBytes) / elapsedSec;
 
-      const rxSpeed = current.rxSpeed > 0 ? current.rxSpeed : deltaRx;
-      const txSpeed = current.txSpeed > 0 ? current.txSpeed : deltaTx;
-
-      lastTotalsRef.current = {
+      lastTotalsSnapshot = {
         rxBytes: current.rxBytes,
         txBytes: current.txBytes,
         ts: now,
       };
 
-      seqRef.current += 1;
+      persistedSeq += 1;
       const point: ThroughputSample = {
-        seq: seqRef.current,
+        seq: persistedSeq,
         timestampMs: now,
-        rxSpeed: Math.max(0, rxSpeed),
-        txSpeed: Math.max(0, txSpeed),
+        rxSpeed: Math.max(0, current.rxSpeed > 0 ? current.rxSpeed : deltaRx),
+        txSpeed: Math.max(0, current.txSpeed > 0 ? current.txSpeed : deltaTx),
       };
+      persistedSamples = [...persistedSamples.slice(-(MAX_SAMPLES - 1)), point];
+      setSamples(persistedSamples);
+    }, 1000);
 
-      setSamples(prev => [...prev.slice(-(MAX_SAMPLES - 1)), point]);
-    };
-
-    const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
   }, [status]);
 
@@ -193,7 +230,7 @@ export const ThroughputChart: React.FC<ThroughputChartProps> = ({ status, stats 
     const xScale = d3.scaleLinear().domain([minSeq, maxSeq]).range([0, innerWidth]);
     const yScale = d3.scaleLinear().domain([0, yMax]).nice(3).range([innerHeight, 0]);
 
-    // Horizontal subtle gridlines
+    // Subtle horizontal gridlines
     const yTicks = yScale.ticks(3);
     g.append('g')
       .attr('class', 'grid-lines')
@@ -380,6 +417,8 @@ export const ThroughputChart: React.FC<ThroughputChartProps> = ({ status, stats 
             <button
               type="button"
               onClick={() => {
+                persistedSamples = [];
+                persistedSeq = 0;
                 setSamples([]);
                 setHoverIndex(null);
               }}

@@ -6,6 +6,8 @@ import android.content.Intent
 import android.net.Uri
 import android.net.VpnService
 import android.os.Bundle
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -19,12 +21,16 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import com.mutiganda.yvanvpn.service.WireGuardController
 import com.wireguard.android.backend.GoBackend
+import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var webView: WebView
     private lateinit var wireGuardController: WireGuardController
+    private var tts: TextToSpeech? = null
+    private var ttsReady: Boolean = false
     private var pendingConfigIni: String = ""
     private var pendingServerLabel: String = "WireGuard Tunnel"
 
@@ -46,6 +52,8 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        initOfflineTextToSpeech()
 
         wireGuardController = WireGuardController(this) { eventType, payload ->
             dispatchToWeb(eventType, payload)
@@ -124,6 +132,43 @@ class MainActivity : ComponentActivity() {
         })
     }
 
+    private fun initOfflineTextToSpeech() {
+        tts = TextToSpeech(applicationContext) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                val engine = tts ?: return@TextToSpeech
+                val langResult = engine.setLanguage(Locale.US)
+                if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    engine.language = Locale.getDefault()
+                }
+                // Deep male-style cadence, works 100% offline using Android's system TTS engine
+                engine.setPitch(0.80f)
+                engine.setSpeechRate(0.94f)
+                engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {
+                        if (utteranceId != null && utteranceId.startsWith("guide_step_")) {
+                            val step = utteranceId.removePrefix("guide_step_").toIntOrNull()
+                            if (step != null) {
+                                dispatchToWeb("tts_step", JSONObject().apply { put("step", step) })
+                            }
+                        }
+                    }
+
+                    override fun onDone(utteranceId: String?) {
+                        if (utteranceId == "guide_last_step") {
+                            dispatchToWeb("tts_done", JSONObject())
+                        }
+                    }
+
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) {
+                        dispatchToWeb("tts_done", JSONObject())
+                    }
+                })
+                ttsReady = true
+            }
+        }
+    }
+
     private fun dispatchToWeb(eventType: String, payload: JSONObject) {
         val escapedType = JSONObject.quote(eventType)
         val jsonStr = payload.toString()
@@ -143,6 +188,52 @@ class MainActivity : ComponentActivity() {
 
         @JavascriptInterface
         fun isWireGuardSupported(): Boolean = true
+
+        @JavascriptInterface
+        fun isOfflineTtsAvailable(): Boolean = ttsReady
+
+        @JavascriptInterface
+        fun speakOffline(stepsJsonOrText: String) {
+            val engine = tts ?: return
+            if (!ttsReady) return
+            runOnUiThread {
+                try {
+                    engine.stop()
+                    val trimmed = stepsJsonOrText.trim()
+                    if (trimmed.startsWith("[")) {
+                        val arr = JSONArray(trimmed)
+                        for (i in 0 until arr.length()) {
+                            val text = arr.optString(i, "")
+                            if (text.isBlank()) continue
+                            val queueMode = if (i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+                            val uttId = if (i == arr.length() - 1) "guide_last_step" else "guide_step_$i"
+                            val params = Bundle().apply {
+                                putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, android.media.AudioManager.STREAM_MUSIC)
+                            }
+                            if (i == arr.length() - 1) {
+                                dispatchToWeb("tts_step", JSONObject().apply { put("step", i) })
+                            }
+                            engine.speak(text, queueMode, params, uttId)
+                        }
+                    } else if (trimmed.isNotBlank()) {
+                        engine.speak(trimmed, TextToSpeech.QUEUE_FLUSH, null, "single_phrase")
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun stopSpeakOffline() {
+            runOnUiThread {
+                try {
+                    tts?.stop()
+                    dispatchToWeb("tts_done", JSONObject())
+                } catch (_: Exception) {
+                }
+            }
+        }
 
         @JavascriptInterface
         fun startWireGuard(configIni: String, serverLabel: String) {
@@ -182,7 +273,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun prepareAndStartWireGuard() {
-        val intent = GoBackend.VpnService.prepare(this) ?: VpnService.prepare(this)
+        dispatchToWeb(
+            "log",
+            JSONObject().apply {
+                put("level", "info")
+                put("message", "[Android VpnService] Preparing VPN permission for $pendingServerLabel...")
+            }
+        )
+        val intent = VpnService.prepare(this)
         if (intent != null) {
             vpnPermissionLauncher.launch(intent)
         } else {
@@ -192,6 +290,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         wireGuardController.destroy()
+        tts?.stop()
+        tts?.shutdown()
         webView.destroy()
         super.onDestroy()
     }
